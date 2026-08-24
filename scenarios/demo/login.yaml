@@ -1,0 +1,11 @@
+scenario: 登录成功颁发token
+module: auth
+priority: P0
+tags: [smoke, auth]
+env: local
+steps:
+  - api:
+      call: "POST /api/login"
+      body: { username: "${username}", password: "${password}" }
+      expect: { status: 200, data.token: not_null }
+      capture: { token: "data.token" }

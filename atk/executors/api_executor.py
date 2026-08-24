@@ -23,7 +23,8 @@ class ApiExecutor:
     variables: dict[str, Any] = field(default_factory=dict)
 
     def execute(self, step: ApiStep) -> StepResult:
-        method, _, path = step.call.partition(" ")
+        method, _, raw_path = step.call.partition(" ")
+        path = substitute(raw_path.strip(), self.variables)
         try:
             resp = self.client.request(
                 method.upper(),

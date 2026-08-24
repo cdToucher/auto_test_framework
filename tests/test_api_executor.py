@@ -51,3 +51,24 @@ def test_implicit_status_guard_when_no_expect(mock_client):
     ex = ApiExecutor(mock_client, {})
     r = ex.execute(ApiStep(call="POST /api/orders"))  # 无 token -> 401，且无显式断言
     assert not r.passed and "400" in r.detail or "<400" in r.detail
+
+
+def test_call_path_variable_substitution(mock_client):
+    ex = ApiExecutor(mock_client, {"token": "tok_demo123", "test_sku": "SKU-001"})
+    create = ApiStep(
+        call="POST /api/orders",
+        headers={"Authorization": "Bearer ${token}"},
+        body={"skuId": "${test_sku}", "qty": 1},
+        expect=[ApiExpect(status=200)],
+        capture={"orderNo": "data.orderNo"},
+    )
+    assert ex.execute(create).passed
+    query = ApiStep(
+        call="GET /api/orders?orderNo=${orderNo}",
+        headers={"Authorization": "Bearer ${token}"},
+        expect=[
+            ApiExpect(status=200),
+            ApiExpect(path="data.list.0.orderNo", op="eq", value=ex.variables["orderNo"]),
+        ],
+    )
+    assert ex.execute(query).passed
