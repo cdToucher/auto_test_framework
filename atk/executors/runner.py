@@ -66,7 +66,7 @@ class Runner:
             env_name=env_name,
             started_at=dt.datetime.now().isoformat(timespec="seconds"),
         )
-        with httpx.Client(base_url=env.base_url, timeout=30) as client:
+        with httpx.Client(base_url=env.base_url, timeout=30, trust_env=False) as client:
             executor = ApiExecutor(client, dict(env.vars))
             for sc in scenarios:
                 result = self._run_one(executor, sc)

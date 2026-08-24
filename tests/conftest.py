@@ -13,5 +13,5 @@ def mock_base_url():
 
 @pytest.fixture
 def mock_client(mock_base_url):
-    with httpx.Client(base_url=mock_base_url, timeout=10) as c:
+    with httpx.Client(base_url=mock_base_url, timeout=10, trust_env=False) as c:
         yield c

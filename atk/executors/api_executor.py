@@ -41,6 +41,8 @@ class ApiExecutor:
             if not ok[0]
             for why in [ok[1]]
         ]
+        if not step.expect and resp.status_code >= 400:
+            failures.append(f"无显式断言，隐式要求 status<400，实际 {resp.status_code}")
         if failures:
             preview = resp.text[:300]
             return StepResult(

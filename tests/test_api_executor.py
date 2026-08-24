@@ -41,7 +41,13 @@ def test_variable_substitution_and_auth_header(mock_client):
 
 
 def test_environment_error_classification():
-    with httpx.Client(base_url="http://127.0.0.1:1", timeout=1) as dead:
+    with httpx.Client(base_url="http://127.0.0.1:1", timeout=1, trust_env=False) as dead:
         ex = ApiExecutor(dead, {})
         r = ex.execute(ApiStep(call="GET /ping"))
     assert not r.passed and r.error_class == "environment"
+
+
+def test_implicit_status_guard_when_no_expect(mock_client):
+    ex = ApiExecutor(mock_client, {})
+    r = ex.execute(ApiStep(call="POST /api/orders"))  # 无 token -> 401，且无显式断言
+    assert not r.passed and "400" in r.detail or "<400" in r.detail
