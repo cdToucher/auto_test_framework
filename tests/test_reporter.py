@@ -26,7 +26,7 @@ def test_render_contains_evidence(tmp_path):
     html = path.read_text(encoding="utf-8")
     assert "下单链路" in html
     assert "status 期望 200 实际 500" in html
-    assert "0/1" in html
+    assert "通过 0" in html and "未通过 1" in html
     assert "失败" in html
 
 
