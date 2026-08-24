@@ -1,0 +1,83 @@
+"""Dogfood 用 mock 后端。路由：
+POST /api/login  {username,password}          -> 200 {code:0,data:{token}} / 401
+POST /api/orders {skuId,qty} (需Bearer tok_*) -> 200 {code:0,data:{orderNo,amount,status}}
+GET  /api/orders?orderNo=X                      -> 200 {code:0,data:{list:[...]}}
+GET  /ping                                      -> 200 {code:0,data:"pong"}
+"""
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+_USERS = {"alice": "secret123"}
+_ORDERS: dict[str, dict] = {}
+_SEQ = iter(range(1001, 9999))
+_LOCK = threading.Lock()
+
+
+class MockHandler(BaseHTTPRequestHandler):
+    def log_message(self, *a):  # 静默访问日志
+        pass
+
+    def _json(self, code: int, payload: dict):
+        body = json.dumps(payload, ensure_ascii=False).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _body(self) -> dict:
+        n = int(self.headers.get("Content-Length", 0))
+        return json.loads(self.rfile.read(n) or b"{}")
+
+    def _authed(self) -> bool:
+        return self.headers.get("Authorization", "").startswith("Bearer tok_")
+
+    def do_POST(self):
+        if self.path == "/api/login":
+            b = self._body()
+            if _USERS.get(b.get("username")) == b.get("password"):
+                self._json(200, {"code": 0, "data": {"token": "tok_demo123"}})
+            else:
+                self._json(401, {"code": 401, "msg": "bad credentials"})
+        elif self.path == "/api/orders":
+            if not self._authed():
+                self._json(401, {"code": 401, "msg": "unauthorized"})
+                return
+            b = self._body()
+            qty = int(b.get("qty", 1))
+            with _LOCK:
+                no = f"NO{next(_SEQ)}"
+                order = {
+                    "orderNo": no,
+                    "amount": round(qty * 9.9, 2),
+                    "status": "待支付",
+                    "skuId": b.get("skuId"),
+                }
+                _ORDERS[no] = order
+            self._json(200, {"code": 0, "data": order})
+        else:
+            self._json(404, {"code": 404})
+
+    def do_GET(self):
+        if self.path.startswith("/api/orders"):
+            no = self.path.split("orderNo=")[-1].split("&")[0]
+            order = _ORDERS.get(no)
+            lst = [order] if order else []
+            self._json(200, {"code": 0, "data": {"list": lst}})
+        elif self.path == "/ping":
+            self._json(200, {"code": 0, "data": "pong"})
+        else:
+            self._json(404, {"code": 404})
+
+
+def make_server(port: int = 0) -> ThreadingHTTPServer:
+    srv = ThreadingHTTPServer(("127.0.0.1", port), MockHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+if __name__ == "__main__":
+    server = make_server(8765)
+    print("mock api on http://127.0.0.1:8765 (Ctrl-C 退出)")
+    server.serve_forever()
