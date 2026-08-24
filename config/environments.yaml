@@ -1,0 +1,6 @@
+local:
+  base_url: "http://127.0.0.1:8765"
+  vars:
+    username: alice
+    password: secret123
+    test_sku: "SKU-001"
