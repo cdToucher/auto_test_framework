@@ -1,0 +1,43 @@
+# GitHub Actions 配置样例：PR 门禁 + 夜间定时回归
+# 使用方法：放到被测仓库 .github/workflows/atk.yml，替换 <<替换点>>。
+name: atk
+
+on:
+  pull_request:
+  schedule:
+    - cron: "0 22 * * 1-5"   # 每工作日 22 点夜间回归
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0       # plan 需要 base...HEAD 三点 diff
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Install atk
+        run: pip install -e /path/to/atk   # <<替换点：atk 框架位置>>
+      - name: Plan (影响面)
+        id: plan
+        run: |
+          BASE=${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || 'HEAD~1' }}
+          OUT=$(atk plan --base "$BASE" --head HEAD)
+          echo "$OUT"
+          echo "run_id=$(echo "$OUT" | grep -o 'run_id: \S*' | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+      - name: Run reuse scenarios
+        env:
+          ATK_BASE_URL: ${{ secrets.ATK_STAGING_URL }}   # 环境地址走 Secrets，不进 git
+        run: |
+          atk run --env staging --record-to "${{ steps.plan.outputs.run_id }}" \
+                  --junit reports/junit.xml
+      - name: Report
+        run: atk report "${{ steps.plan.outputs.run_id }}"
+      - name: Gate（PR 时拦截合并）
+        if: github.event_name == 'pull_request'
+        run: atk gate "${{ steps.plan.outputs.run_id }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: atk-reports
+          path: reports/

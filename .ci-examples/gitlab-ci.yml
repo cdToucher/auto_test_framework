@@ -1,0 +1,51 @@
+# GitLab CI 配置样例：MR 门禁 + 夜间定时回归
+# 使用方法：拷贝到被测仓库 .gitlab-ci.yml，替换 <<替换点>> 即可。
+# 前提：
+#   1. atk 框架已随仓库可安装（pip install -e /path/to/atk 或发布为私有包）
+#   2. CI 变量配置测试环境地址（避免真实口令入库）：
+#      ATK_STAGING_URL=https://staging-api.example.com
+#      密钥类变量走 Settings > CI/CD > Variables（masked）
+
+stages: [test, gate]
+
+.atk-setup: &atk-setup
+  - pip install -e /path/to/atk   # <<替换点：atk 框架位置>>
+
+# ---------- MR 门禁 ----------
+smoke-mr:
+  stage: test
+  image: python:3.12
+  <<: *atk-setup
+  script:
+    # 1. 影响面+计划（基线=目标分支）
+    - PLAN=$(.venv/bin/atk plan --base origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME --head HEAD)
+    - echo "$PLAN"; RUN_ID=$(echo "$PLAN" | grep -o 'run_id: \S*' | cut -d' ' -f2)
+    # 2. 注入环境并执行复用场景（敏感值由 CI 变量注入，不进 git）
+    - export ATK_BASE_URL="$ATK_STAGING_URL"   # environments.yaml 可用 ${ATK_BASE_URL} 占位
+    - atk run --env staging --record-to "$RUN_ID" --junit reports/junit.xml
+    # 3. AI 冒烟（可选）：由 agent 执行器完成 UI 意图后回填
+    #    见 .claude/skills/atk-smoke/SKILL.md
+    - atk report "$RUN_ID"
+    - atk gate "$RUN_ID"                        # 门禁判定，失败即拦截 MR
+  artifacts:
+    when: always
+    paths: [reports/]
+    reports:
+      junit: reports/junit.xml
+
+# ---------- 夜间定时回归（Settings > Schedules 里建 nightly 计划触发） ----------
+nightly-regression:
+  stage: test
+  image: python:3.12
+  <<: *atk-setup
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+  script:
+    - RUN_ID=$(atk plan --base "$(git describe --tags --abbrev=0)" --head HEAD | grep -o 'run_id: \S*' | cut -d' ' -f2)
+    - atk run --env staging --priority P1 --record-to "$RUN_ID" --junit reports/junit-nightly.xml
+    - atk report "$RUN_ID"
+    # 夜间允许受阻但不允许用例失败；suspect 需次日人工定性（SLA 24h）
+    - atk gate "$RUN_ID"
+  artifacts:
+    when: always
+    paths: [reports/]
