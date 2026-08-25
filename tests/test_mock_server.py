@@ -12,3 +12,11 @@ def test_create_and_query_order(mock_client):
     assert r.json()["data"]["status"] == "待支付"
     q = mock_client.get(f"/api/orders?orderNo={no}")
     assert q.json()["data"]["list"][0]["orderNo"] == no
+
+
+def test_web_pages_served(mock_client):
+    login = mock_client.get("/")
+    assert login.status_code == 200 and "text/html" in login.headers["content-type"]
+    assert 'id="username"' in login.text and 'id="password"' in login.text
+    app = mock_client.get("/app")
+    assert app.status_code == 200 and 'id="orderNo"' in app.text
