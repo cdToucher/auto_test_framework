@@ -135,5 +135,3 @@ if __name__ == "__main__":
     server = make_server(8765)
     print("mock api on http://127.0.0.1:8765 (Ctrl-C 退出)")
     server.serve_forever()
-
-# dogfood touch
