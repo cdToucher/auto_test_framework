@@ -1,0 +1,75 @@
+# atk — AI 原生双层自动化测试框架
+
+即时层（变更驱动冒烟，不落库）+ 沉淀层（YAML 场景回归），设计详见
+`docs/superpowers/specs/2026-08-24-atk-design.md`，角色规范见 `docs/roles.md`。
+
+核心思想：**AI 干量产的活（生成/实测/固化填充），人做判断的事（审断言、定性失败），机器守确定的门（gate）。**
+
+## 功能总览
+
+| 命令 | 作用 |
+|---|---|
+| `atk init` | 初始化项目结构（只建缺失文件，绝不覆盖） |
+| `atk validate` | 场景库合法性校验（错误+重名告警），QA 提交前自查 |
+| `atk diff` | git 变更 → 模块影响面 JSON |
+| `atk plan` | 创建运行记录，输出复用场景清单与待补全意图 |
+| `atk run` | 执行场景：HTML 报告 + 可选 JUnit XML + 可并入运行记录 |
+| `atk record` | Agent 回填 UI 探索意图结论（pass/fail/suspect/blocked + 截图证据） |
+| `atk report` | 渲染运行记录为统一 HTML 报告（含截图缩略） |
+| `atk export` | 场景固化为自包含 pytest 脚本（API 确定性；UI 步骤留占位由 Agent 填充） |
+| `atk doctor` | 固化脚本诊断分类：healthy/pending/repairable/suspect_bug/broken |
+| `atk gate` | 合并门禁：变更一致性 + 用例失败 + 未定性三查 |
+
+执行质量特性：环境错误自动重试（`retries` 默认 1）、非 JSON 响应保护、
+场景级 fixtures 数据（`data:` 字段）、变量捕获场景间隔离、退出码三态
+（0 通过 / 1 失败 / 2 受阻或配置问题）。
+
+## 快速开始
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+.venv/bin/atk init                            # 生成配置与示例场景骨架
+.venv/bin/python -m examples.mock_server &    # 示例被测服务
+.venv/bin/atk validate && .venv/bin/atk run --env local
+```
+
+## 即时层工作流（变更驱动冒烟）
+
+```
+atk diff → atk plan → (Agent) atk run --record-to <id> + ego-browser 实测
+        → atk record <id> → atk report <id> → atk gate <id>
+```
+
+完整编排规则见 `.claude/skills/atk-smoke/SKILL.md`；代码→模块映射见
+`config/modules.yaml`。CI 接入模板见 `.ci-examples/`（GitLab / GitHub Actions，
+含 MR 门禁 job 与夜间定时回归）。
+
+## 场景编写
+
+参考 `scenarios/demo/`。步骤分 `api:`（结构化，立即生效）与 `ui:`
+（自然语言，即时层由 Agent 实测；沉淀层 export 后由 Agent 填充选择器）。
+`expect` 是场景的灵魂，也是 QA 评审的核心对象。
+
+```yaml
+scenario: 下单后可查询订单
+module: order
+priority: P0            # P0=门禁必跑 / P1=夜间回归 / P2=周级全量
+tags: [smoke]
+data: fixtures/order.yaml   # 场景级测试数据，优先级 env < fixture < capture
+steps:
+  - api:
+      call: "POST /api/login"
+      body: { username: "${username}", password: "${password}" }
+      expect: { status: 200 }
+      capture: { token: "data.token" }   # 捕获响应值供后续步骤
+      retries: 2                          # 仅环境类错误重试
+```
+
+## 路线图
+
+| 里程碑 | 内容 | 状态 |
+|---|---|---|
+| M1 | 骨架 + API 执行器 + 场景库 + HTML 报告 | ✅ |
+| M2 | Agent 编排 UI 执行器 + 即时层全链路 | ✅ |
+| M3 | 固化流水线(export/doctor) + 门禁(gate) + CI 样例 | ✅ |
+| M4 | 角色规范文档（docs/roles.md） | ✅ |

@@ -1,0 +1,21 @@
+scenario: 下单后可查询到待支付订单
+module: order
+priority: P0
+tags: [smoke, order]
+env: local
+steps:
+  - api:
+      call: "POST /api/login"
+      body: { username: "${username}", password: "${password}" }
+      expect: { status: 200 }
+      capture: { token: "data.token" }
+  - api:
+      call: "POST /api/orders"
+      headers: { Authorization: "Bearer ${token}" }
+      body: { skuId: "${test_sku}", qty: 2 }
+      expect: { status: 200, data.orderNo: not_null, data.status: 待支付 }
+      capture: { orderNo: "data.orderNo" }
+  - api:
+      call: "GET /api/orders?orderNo=${orderNo}"
+      headers: { Authorization: "Bearer ${token}" }
+      expect: { status: 200, data.list.0.status: 待支付 }
