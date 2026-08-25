@@ -96,6 +96,35 @@ def plan(
     )
 
 
+_INTENT_STATUS = {"pass", "fail", "suspect", "blocked"}
+
+
+@app.command()
+def record(
+    run_id: str,
+    title: str = typer.Option(..., help="测试意图标题"),
+    status: str = typer.Option("pass", help="pass|fail|suspect|blocked"),
+    note: str = typer.Option("", help="结论描述/根因猜测"),
+    evidence: Optional[str] = typer.Option(None, help="证据文件路径，逗号分隔"),
+    runs_dir: Path = typer.Option("reports/runs"),
+):
+    """回填一条即时层意图的执行结果（Agent 用 ego-browser 实测后调用）。"""
+    if status not in _INTENT_STATUS:
+        raise typer.BadParameter(f"status 必须是 {'/'.join(sorted(_INTENT_STATUS))}")
+    try:
+        rec = load_run(run_id, str(runs_dir))
+    except KeyError as e:
+        typer.secho(str(e), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    sources = [p.strip() for p in evidence.split(",")] if evidence else []
+    saved = add_evidence(rec, sources, str(runs_dir))
+    missing = len([p for p in sources if p]) - len(saved)
+    rec.intents.append(IntentRecord(title=title, status=status, note=note, evidence=saved))
+    save_run(rec, str(runs_dir))
+    warn = f"（{missing} 个证据文件不存在已跳过）" if missing else ""
+    typer.echo(f"已记录：{title} [{status}] 证据 {len(saved)} 项{warn}")
+
+
 @app.command()
 def run(
     env: Optional[str] = typer.Option(
@@ -107,6 +136,8 @@ def run(
     env_file: Path = typer.Option("config/environments.yaml"),
     root: Path = typer.Option("scenarios"),
     report_dir: Path = typer.Option("reports"),
+    record_to: Optional[str] = typer.Option(None, help="把本次结果并入指定运行记录"),
+    runs_dir: Path = typer.Option("reports/runs"),
 ):
     """执行场景并生成 HTML 报告。
 
@@ -141,6 +172,15 @@ def run(
         f"（用例失败 {report.failed_count}，受阻 {report.blocked_count}，"
         f"加载跳过 {len(report.load_errors)}）\n报告：{path}"
     )
+    if record_to:
+        try:
+            rec = load_run(record_to, str(runs_dir))
+        except KeyError as e:
+            typer.secho(str(e), fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+        rec.scenarios.extend(summarize(r) for r in report.results)
+        save_run(rec, str(runs_dir))
+        typer.echo(f"已并入运行记录 {record_to}")
     raise typer.Exit(code=report.exit_code)
 
 
