@@ -1,5 +1,6 @@
 """atk 命令行入口。"""
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 
@@ -33,6 +34,23 @@ def list_cmd(
     for s in scs:
         typer.echo(f"{s.priority.value}  [{s.module}]  {s.scenario}  ({s.file})")
     typer.echo(f"共 {len(scs)} 个场景")
+
+
+@app.command()
+def validate(
+    root: Path = typer.Option("scenarios"),
+):
+    """校验场景库合法性（QA 提交前自查）。退出码 0/1。"""
+    scs, errors = load_scenarios(root)
+    for e in errors:
+        typer.secho(f"[错误] {e}", fg=typer.colors.RED)
+    dup = {n for n, c in Counter(s.scenario for s in scs).items() if c > 1}
+    for n in sorted(dup):
+        files = [s.file for s in scs if s.scenario == n]
+        typer.secho(f"[警告] 场景名重复: {n} -> {', '.join(files)}", fg=typer.colors.YELLOW)
+    ok = len([s for s in scs if s.scenario not in dup])
+    typer.echo(f"{len(errors)} 个文件错误，{len(dup)} 个重名，{ok} 个场景通过校验")
+    raise typer.Exit(code=1 if errors else 0)
 
 
 @app.command()
