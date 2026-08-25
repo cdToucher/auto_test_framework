@@ -12,6 +12,7 @@ from .executors.runner import Runner
 from .reporter.html_reporter import render_html, render_run_html
 from .reporter.junit import write_junit
 from .run_store import IntentRecord, add_evidence, create_run, load_run, save_run, summarize
+from .solidify.doctor import diagnose as _diagnose
 from .solidify.exporter import export_scenario
 from .store.loader import load_scenarios, select
 from .store.models import Priority
@@ -231,6 +232,22 @@ def export(
         variables=dict(cfg.vars),
     )
     typer.echo(f"已生成：{path}\n运行：pytest {path}")
+
+
+@app.command()
+def doctor(
+    path: Path = typer.Argument(..., help="固化脚本（或目录）路径"),
+):
+    """诊断固化脚本：healthy/pending/repairable/suspect_bug/broken。
+
+    退出码：0=healthy|pending；1=repairable|suspect_bug|broken；2=文件不存在。
+    """
+    if not Path(path).exists():
+        typer.secho(f"路径不存在: {path}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    result = _diagnose(path)
+    typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+    raise typer.Exit(code=0 if result["status"] in ("healthy", "pending") else 1)
 
 
 @app.command()
