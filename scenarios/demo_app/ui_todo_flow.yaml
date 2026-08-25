@@ -1,0 +1,17 @@
+scenario: 页面添加待办并完成
+module: ui
+priority: P0
+tags: [smoke, ui]
+env: demoapp
+steps:
+  - api:
+      call: "POST /api/login"
+      body: { username: "${username}", password: "${password}" }
+      expect: { status: 200 }
+      capture: { token: "data.token" }
+  - ui:
+      action: 登录后在新任务输入框填写"UI冒烟任务"并点击添加，列表出现该条目
+      expect: 列表第一项显示"UI冒烟任务"且状态为待办
+  - ui:
+      action: 点击该条目的"完成"按钮
+      expect: 条目状态变为已完成标记

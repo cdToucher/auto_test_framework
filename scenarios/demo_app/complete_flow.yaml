@@ -1,0 +1,25 @@
+scenario: 完成待办进入已完成列表
+module: todo
+priority: P0
+tags: [smoke]
+env: demoapp
+steps:
+  - api:
+      call: "POST /api/login"
+      body: { username: "${username}", password: "${password}" }
+      expect: { status: 200 }
+      capture: { token: "data.token" }
+  - api:
+      call: "POST /api/todos"
+      headers: { Authorization: "Bearer ${token}" }
+      body: { title: "完成流程任务" }
+      expect: { status: 200 }
+      capture: { tid: "data.id" }
+  - api:
+      call: "POST /api/todos/${tid}/complete"
+      headers: { Authorization: "Bearer ${token}" }
+      expect: { status: 200, data.status: done }
+  - api:
+      call: "DELETE /api/todos/${tid}"
+      headers: { Authorization: "Bearer ${token}" }
+      expect: { status: 200 }

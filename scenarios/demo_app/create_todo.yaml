@@ -1,0 +1,21 @@
+scenario: 创建待办并可在列表查到
+module: todo
+priority: P0
+tags: [smoke]
+env: demoapp
+steps:
+  - api:
+      call: "POST /api/login"
+      body: { username: "${username}", password: "${password}" }
+      expect: { status: 200, data.token: not_null }
+      capture: { token: "data.token" }
+  - api:
+      call: "POST /api/todos"
+      headers: { Authorization: "Bearer ${token}" }
+      body: { title: "atk冒烟任务" }
+      expect: { status: 200, data.status: pending }
+      capture: { tid: "data.id" }
+  - api:
+      call: "GET /api/todos?status=pending"
+      headers: { Authorization: "Bearer ${token}" }
+      expect: { status: 200 }

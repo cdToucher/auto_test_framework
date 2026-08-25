@@ -1,0 +1,25 @@
+scenario: 重复完成被拒绝409
+module: todo
+priority: P1
+tags: [negative]
+env: demoapp
+steps:
+  - api:
+      call: "POST /api/login"
+      body: { username: "${username}", password: "${password}" }
+      expect: { status: 200 }
+      capture: { token: "data.token" }
+  - api:
+      call: "POST /api/todos"
+      headers: { Authorization: "Bearer ${token}" }
+      body: { title: "负向-重复完成" }
+      expect: { status: 200 }
+      capture: { tid: "data.id" }
+  - api:
+      call: "POST /api/todos/${tid}/complete"
+      headers: { Authorization: "Bearer ${token}" }
+      expect: { status: 200 }
+  - api:
+      call: "POST /api/todos/${tid}/complete"
+      headers: { Authorization: "Bearer ${token}" }
+      expect: { status: 409 }

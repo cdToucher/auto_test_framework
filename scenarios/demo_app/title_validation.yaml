@@ -1,0 +1,20 @@
+scenario: 空标题创建被校验拦截
+module: todo
+priority: P1
+tags: [negative]
+env: demoapp
+steps:
+  - api:
+      call: "POST /api/login"
+      body: { username: "${username}", password: "${password}" }
+      expect: { status: 200 }
+      capture: { token: "data.token" }
+  - api:
+      call: "POST /api/todos"
+      headers: { Authorization: "Bearer ${token}" }
+      body: { title: "" }
+      expect: { status: 422 }
+  - api:
+      call: "POST /api/todos"
+      headers: { Authorization: "Bearer ${token}" }
+      expect: { status: 422 }

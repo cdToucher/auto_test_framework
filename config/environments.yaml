@@ -4,3 +4,9 @@ local:
     username: alice
     password: secret123
     test_sku: "SKU-001"
+
+demoapp:
+  base_url: "http://127.0.0.1:8766"
+  vars:
+    username: alice
+    password: secret123

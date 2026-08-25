@@ -3,4 +3,7 @@
 modules:
   demo:
     - "examples/mock_server.py"
-    - "examples/**"
+  todo:
+    - "examples/demo_app.py"
+  ui:
+    - "examples/demo_app.py"
