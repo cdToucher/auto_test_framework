@@ -12,6 +12,7 @@ from .executors.runner import Runner
 from .reporter.html_reporter import render_html, render_run_html
 from .reporter.junit import write_junit
 from .run_store import IntentRecord, add_evidence, create_run, load_run, save_run, summarize
+from .solidify.exporter import export_scenario
 from .store.loader import load_scenarios, select
 from .store.models import Priority
 
@@ -205,6 +206,31 @@ def run(
         save_run(rec, str(runs_dir))
         typer.echo(f"已并入运行记录 {record_to}")
     raise typer.Exit(code=report.exit_code)
+
+
+@app.command()
+def export(
+    scenario: Path = typer.Argument(..., help="场景 YAML 路径"),
+    out_dir: Path = typer.Option("generated", help="固化脚本输出目录"),
+    env: str = typer.Option("local", help="导出时用于解析 ${var} 的环境"),
+    env_file: Path = typer.Option("config/environments.yaml"),
+    base_url: Optional[str] = typer.Option(None, help="覆盖 base_url（默认取环境配置）"),
+):
+    """把场景固化为自包含 pytest 脚本（API 确定性，UI 步骤留待 Agent 填充）。"""
+    from .executors.env import load_env as _load_env
+
+    try:
+        cfg = _load_env(env_file, env)
+    except KeyError as e:
+        typer.secho(f"环境配置错误：{e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    path = export_scenario(
+        scenario,
+        out_dir=out_dir,
+        base_url=base_url or cfg.base_url,
+        variables=dict(cfg.vars),
+    )
+    typer.echo(f"已生成：{path}\n运行：pytest {path}")
 
 
 @app.command()
