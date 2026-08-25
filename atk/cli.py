@@ -294,7 +294,9 @@ def gate(
     if case_fail:
         verdicts.append((False, f"用例失败 {len(case_fail)} 个: " + ", ".join(s.name for s in case_fail)))
     elif rec.scenarios:
-        verdicts.append((True, f"复用场景 {len(rec.scenarios)} 个全部通过"))
+        blocked_n = len(rec.scenarios) - sum(1 for s in rec.scenarios if s.passed)
+        verdicts.append((True, f"复用场景 {len(rec.scenarios)} 个无用例失败"
+                                + (f"（受阻 {blocked_n} 个）" if blocked_n else "")))
 
     bad_intents = [i for i in rec.intents if i.status in ("fail", "suspect")]
     if bad_intents:
