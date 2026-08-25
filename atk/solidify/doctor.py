@@ -21,7 +21,7 @@ _E_LINE = re.compile(r"^(E\s+.+)$", re.MULTILINE)
 
 
 def diagnose(path: Path | str, timeout: float = 120.0) -> dict:
-    path = Path(path)
+    path = Path(path).resolve()  # 子进程会切换 cwd，必须先转绝对路径
     if not path.exists():
         return {"status": "missing", "file": str(path), "failures": []}
     proc = subprocess.run(

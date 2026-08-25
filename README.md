@@ -1,63 +1,75 @@
 # atk — AI 原生双层自动化测试框架
 
 即时层（变更驱动冒烟，不落库）+ 沉淀层（YAML 场景回归），设计详见
-`docs/superpowers/specs/2026-08-24-atk-design.md`。
+`docs/superpowers/specs/2026-08-24-atk-design.md`，角色规范见 `docs/roles.md`。
 
-## M1 已有能力
+核心思想：**AI 干量产的活（生成/实测/固化填充），人做判断的事（审断言、定性失败），机器守确定的门（gate）。**
 
-- YAML 场景库：API 步骤确定性执行，UI 步骤占位（M2 接 ego-browser）
-- 多环境配置 + `${var}` 变量替换（headers/body/URL）+ 步骤间变量捕获（场景间隔离）
-- 断言：`status` / 点路径 `eq` / `not_null`；未显式断言 status 时隐式要求 status<400
-- 环境错误与用例失败分类：非 JSON 响应、服务不可达等不会中断整批执行
-- 坏场景文件逐个跳过并在报告/CLI 中提示，不连累其余场景
-- CLI：`atk list` / `atk run`（`--env` 可省略，省略时按场景自身 `env` 字段路由）
+## 功能总览
 
-**退出码**：`0`=全部通过；`1`=存在用例失败或场景加载错误（CI 门禁拦截）；
-`2`=仅环境受阻（提示检查环境，不判用例失败）。
+| 命令 | 作用 |
+|---|---|
+| `atk init` | 初始化项目结构（只建缺失文件，绝不覆盖） |
+| `atk validate` | 场景库合法性校验（错误+重名告警），QA 提交前自查 |
+| `atk diff` | git 变更 → 模块影响面 JSON |
+| `atk plan` | 创建运行记录，输出复用场景清单与待补全意图 |
+| `atk run` | 执行场景：HTML 报告 + 可选 JUnit XML + 可并入运行记录 |
+| `atk record` | Agent 回填 UI 探索意图结论（pass/fail/suspect/blocked + 截图证据） |
+| `atk report` | 渲染运行记录为统一 HTML 报告（含截图缩略） |
+| `atk export` | 场景固化为自包含 pytest 脚本（API 确定性；UI 步骤留占位由 Agent 填充） |
+| `atk doctor` | 固化脚本诊断分类：healthy/pending/repairable/suspect_bug/broken |
+| `atk gate` | 合并门禁：变更一致性 + 用例失败 + 未定性三查 |
 
-被测环境需经系统代理访问时，在 environments.yaml 对应环境下加 `trust_env: true`。
-真实口令勿入库：vars 中的敏感值建议由 CI 注入临时配置文件（`${env:VAR}` 支持规划中）。
+执行质量特性：环境错误自动重试（`retries` 默认 1）、非 JSON 响应保护、
+场景级 fixtures 数据（`data:` 字段）、变量捕获场景间隔离、退出码三态
+（0 通过 / 1 失败 / 2 受阻或配置问题）。
 
 ## 快速开始
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-.venv/bin/python -m examples.mock_server &   # 示例被测服务
-.venv/bin/atk list
-.venv/bin/atk run --env local                 # 打开 reports/report-latest.html 查看
+.venv/bin/atk init                            # 生成配置与示例场景骨架
+.venv/bin/python -m examples.mock_server &    # 示例被测服务
+.venv/bin/atk validate && .venv/bin/atk run --env local
 ```
+
+## 即时层工作流（变更驱动冒烟）
+
+```
+atk diff → atk plan → (Agent) atk run --record-to <id> + ego-browser 实测
+        → atk record <id> → atk report <id> → atk gate <id>
+```
+
+完整编排规则见 `.claude/skills/atk-smoke/SKILL.md`；代码→模块映射见
+`config/modules.yaml`。CI 接入模板见 `.ci-examples/`（GitLab / GitHub Actions，
+含 MR 门禁 job 与夜间定时回归）。
 
 ## 场景编写
 
 参考 `scenarios/demo/`。步骤分 `api:`（结构化，立即生效）与 `ui:`
-（自然语言，M2 实现）。`expect` 是场景的灵魂，也是 QA 评审的核心对象。
+（自然语言，即时层由 Agent 实测；沉淀层 export 后由 Agent 填充选择器）。
+`expect` 是场景的灵魂，也是 QA 评审的核心对象。
 
 ```yaml
-scenario: 下单后可查询到待支付订单
+scenario: 下单后可查询订单
 module: order
 priority: P0            # P0=门禁必跑 / P1=夜间回归 / P2=周级全量
-tags: [smoke, order]
+tags: [smoke]
+data: fixtures/order.yaml   # 场景级测试数据，优先级 env < fixture < capture
 steps:
   - api:
       call: "POST /api/login"
       body: { username: "${username}", password: "${password}" }
-      expect: { status: 200, data.token: not_null }
-      capture: { token: "data.token" }   # 捕获响应值供后续步骤使用
+      expect: { status: 200 }
+      capture: { token: "data.token" }   # 捕获响应值供后续步骤
+      retries: 2                          # 仅环境类错误重试
 ```
-
-## M2 已有能力（即时层）
-
-`atk diff` 影响面分析 → `atk plan` 生成运行计划 → `atk run --record-to <id>`
-执行复用场景 → AI 用 ego-browser 实测新意图后 `atk record <id>` 回填 →
-`atk report <id>` 输出统一 HTML 报告（含截图证据）。完整工作流见
-`.claude/skills/atk-smoke/SKILL.md`；被测代码路径→测试模块的映射配置见
-`config/modules.yaml`。
 
 ## 路线图
 
-| 里程碑 | 内容 |
-|---|---|
-| M1 ✅ | 骨架 + API 执行器 + 场景库 + HTML 报告 |
-| M2 ✅ | ego-browser UI 执行器（Agent 编排）+ 即时层全链路 |
-| M3 | YAML→Playwright 固化流水线 + 自修复 + 夜间定时 + 门禁 bot |
-| M4 | 角色规范文档定稿 + 团队试点 |
+| 里程碑 | 内容 | 状态 |
+|---|---|---|
+| M1 | 骨架 + API 执行器 + 场景库 + HTML 报告 | ✅ |
+| M2 | Agent 编排 UI 执行器 + 即时层全链路 | ✅ |
+| M3 | 固化流水线(export/doctor) + 门禁(gate) + CI 样例 | ✅ |
+| M4 | 角色规范文档（docs/roles.md） | ✅ |
