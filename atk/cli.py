@@ -265,6 +265,50 @@ def report(
     typer.echo(f"报告：{out}")
 
 
+@app.command()
+def gate(
+    run_id: str,
+    head: str = typer.Option("HEAD", help="待合并的变更引用"),
+    repo: Path = typer.Option("."),
+    runs_dir: Path = typer.Option("reports/runs"),
+):
+    """合并门禁：校验运行记录与当前变更一致且无失败/未定性结论。
+
+    退出码：0=放行；1=拦截；2=记录不存在。
+    """
+    try:
+        rec = load_run(run_id, str(runs_dir))
+    except KeyError as e:
+        typer.secho(str(e), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+
+    verdicts: list[tuple[bool, str]] = []  # (是否放行, 说明)
+
+    current = changed_files(rec.base_ref, head, str(repo))
+    if sorted(current) != sorted(rec.affected_files):
+        verdicts.append((False, "变更已漂移：当前 diff 与运行记录不一致，请重新 plan"))
+    else:
+        verdicts.append((True, f"变更一致（{len(current)} 个文件）"))
+
+    case_fail = [s for s in rec.scenarios if not s.passed and s.error_class in ("assertion", "config")]
+    if case_fail:
+        verdicts.append((False, f"用例失败 {len(case_fail)} 个: " + ", ".join(s.name for s in case_fail)))
+    elif rec.scenarios:
+        verdicts.append((True, f"复用场景 {len(rec.scenarios)} 个全部通过"))
+
+    bad_intents = [i for i in rec.intents if i.status in ("fail", "suspect")]
+    if bad_intents:
+        verdicts.append((False, "存在未定性结论: " + "; ".join(f"{i.title}[{i.status}]" for i in bad_intents)))
+    blocked = [i for i in rec.intents if i.status == "blocked"]
+    if blocked:
+        verdicts.append((True, f"受阻意图 {len(blocked)} 条（不拦截，但需关注）"))
+
+    for ok, msg in verdicts:
+        typer.echo(("✓ " if ok else "✗ ") + msg)
+    typer.echo(f"\n门禁结论：{'放行' if all(ok for ok, _ in verdicts) else '拦截'}")
+    raise typer.Exit(code=0 if all(ok for ok, _ in verdicts) else 1)
+
+
 def main():
     app()
 
