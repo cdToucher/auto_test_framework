@@ -21,7 +21,7 @@ def test_scenario_data_fixture_merged(tmp_path, mock_base_url):
         "  - api:\n"
         '      call: "POST /api/orders"\n'
         "      headers: {Authorization: 'Bearer tok_demo123'}\n"
-        "      body: {skuId: '${sku}', qty: ${qty}}\n"
+        "      body: {skuId: '${sku}', qty: '${qty}'}\n"
         "      expect: {status: 200}\n",
         encoding="utf-8",
     )
