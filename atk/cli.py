@@ -309,6 +309,70 @@ def gate(
     raise typer.Exit(code=0 if all(ok for ok, _ in verdicts) else 1)
 
 
+_INIT_ENV = """\
+# 环境配置：run --env <name> 引用；vars 供 ${var} 替换。
+# 敏感值建议由 CI 注入临时文件，勿提交真实口令。
+local:
+  base_url: "http://127.0.0.1:8000"
+  vars:
+    username: testuser
+    password: testpass
+"""
+
+_INIT_MODULES = """\
+# 被测代码路径 -> 测试模块（scenarios/<module>/）。fnmatch 通配，首个命中生效。
+modules:
+  example:
+    - "src/**"
+"""
+
+_INIT_SCENARIO = """\
+scenario: 示例-健康检查
+module: example
+priority: P0
+tags: [smoke]
+steps:
+  - api:
+      call: "GET /health"
+      expect: { status: 200 }
+"""
+
+
+@app.command()
+def init(
+    root: Path = typer.Option(".", help="项目根目录"),
+):
+    """初始化 atk 项目结构（只创建缺失文件，绝不覆盖）。"""
+    root = Path(root)
+    targets: dict[Path, str] = {
+        root / "config/environments.yaml": _INIT_ENV,
+        root / "config/modules.yaml": _INIT_MODULES,
+        root / "scenarios/demo/example.yaml": _INIT_SCENARIO,
+        root / "fixtures/.gitkeep": "",
+        root / "reports/runs/.gitkeep": "",
+    }
+    created, skipped = [], []
+    for path, content in targets.items():
+        if path.exists():
+            skipped.append(str(path))
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        created.append(str(path))
+    for p in created:
+        typer.echo(f"创建 {p}")
+    for p in skipped:
+        typer.echo(f"跳过（已存在） {p}")
+    typer.echo(
+        "\n下一步：\n"
+        "  1. 编辑 config/environments.yaml 指向你的环境\n"
+        "  2. 编辑 config/modules.yaml 建立代码->模块映射\n"
+        "  3. 在 scenarios/ 编写场景（参考 scenarios/demo/example.yaml）\n"
+        "  4. atk validate 校验 -> atk run 执行"
+    )
+    raise typer.Exit(code=0)
+
+
 def main():
     app()
 
