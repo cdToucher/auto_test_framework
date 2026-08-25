@@ -10,6 +10,7 @@ from .diff_analyzer.git_diff import changed_files
 from .diff_analyzer.modules import classify, load_module_map
 from .executors.runner import Runner
 from .reporter.html_reporter import render_html, render_run_html
+from .reporter.junit import write_junit
 from .run_store import IntentRecord, add_evidence, create_run, load_run, save_run, summarize
 from .store.loader import load_scenarios, select
 from .store.models import Priority
@@ -156,6 +157,7 @@ def run(
     report_dir: Path = typer.Option("reports"),
     record_to: Optional[str] = typer.Option(None, help="把本次结果并入指定运行记录"),
     runs_dir: Path = typer.Option("reports/runs"),
+    junit: Optional[Path] = typer.Option(None, help="同时输出 JUnit XML 到指定路径"),
 ):
     """执行场景并生成 HTML 报告。
 
@@ -190,6 +192,9 @@ def run(
         f"（用例失败 {report.failed_count}，受阻 {report.blocked_count}，"
         f"加载跳过 {len(report.load_errors)}）\n报告：{path}"
     )
+    if junit:
+        jp = write_junit(report, junit)
+        typer.echo(f"JUnit：{jp}")
     if record_to:
         try:
             rec = load_run(record_to, str(runs_dir))
