@@ -16,7 +16,7 @@ def _record(tmp_path):
         head_ref="HEAD",
         affected_files=["src/a.py"],
         affected_modules=["demo"],
-        runs_dir=tmp_path / "runs",
+        runs_dir=tmp_path / "reports" / "runs",
     )
     rec.scenarios.append(
         ScenarioSummary(
@@ -39,17 +39,20 @@ def _record(tmp_path):
             evidence=["evidence/s.png"],
         )
     )
+    from atk.run_store import save_run
+
+    save_run(rec, runs_dir=tmp_path / "reports" / "runs")
     return rec
 
 
 def test_render_run_html_contains_all_sections(tmp_path):
     rec = _record(tmp_path)
-    out = render_run_html(rec, tmp_path / "runs" / rec.run_id / "report.html")
+    out = render_run_html(rec, tmp_path / "reports" / "runs" / rec.run_id / "report.html")
     html = out.read_text(encoding="utf-8")
     assert rec.run_id in html and "HEAD~1" in html
     assert "登录冒烟" in html and "scenarios/demo/login.yaml" in html
     assert "订单页 UI 探索" in html and "疑似" in html and "金额显示疑似未刷新" in html
-    assert 'src="evidence/s.png"' in html and "src/a.py" in html
+    assert "evidence/s.png" in html and "<img" in html and "src/a.py" in html
 
 
 def test_report_command(tmp_path, monkeypatch):
