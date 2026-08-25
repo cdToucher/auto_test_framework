@@ -45,11 +45,19 @@ steps:
       capture: { token: "data.token" }   # 捕获响应值供后续步骤使用
 ```
 
+## M2 已有能力（即时层）
+
+`atk diff` 影响面分析 → `atk plan` 生成运行计划 → `atk run --record-to <id>`
+执行复用场景 → AI 用 ego-browser 实测新意图后 `atk record <id>` 回填 →
+`atk report <id>` 输出统一 HTML 报告（含截图证据）。完整工作流见
+`.claude/skills/atk-smoke/SKILL.md`；被测代码路径→测试模块的映射配置见
+`config/modules.yaml`。
+
 ## 路线图
 
 | 里程碑 | 内容 |
 |---|---|
 | M1 ✅ | 骨架 + API 执行器 + 场景库 + HTML 报告 |
-| M2 | ego-browser UI 执行器 + 即时层全链路（diff→plan→run→report） |
+| M2 ✅ | ego-browser UI 执行器（Agent 编排）+ 即时层全链路 |
 | M3 | YAML→Playwright 固化流水线 + 自修复 + 夜间定时 + 门禁 bot |
 | M4 | 角色规范文档定稿 + 团队试点 |

@@ -1,0 +1,6 @@
+# 被测代码路径 -> 测试模块（scenarios/<module>/）。fnmatch 通配，首个命中生效。
+# 团队接入时：把左侧规则替换为你们被测仓库的目录约定。
+modules:
+  demo:
+    - "examples/mock_server.py"
+    - "examples/**"
