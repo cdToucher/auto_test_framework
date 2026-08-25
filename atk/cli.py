@@ -1,11 +1,15 @@
 """atk 命令行入口。"""
+import json
 from pathlib import Path
 from typing import Optional
 
 import typer
 
+from .diff_analyzer.git_diff import changed_files
+from .diff_analyzer.modules import classify, load_module_map
 from .executors.runner import Runner
 from .reporter.html_reporter import render_html
+from .run_store import IntentRecord, add_evidence, create_run, load_run, save_run, summarize
 from .store.loader import load_scenarios, select
 from .store.models import Priority
 
@@ -29,6 +33,67 @@ def list_cmd(
     for s in scs:
         typer.echo(f"{s.priority.value}  [{s.module}]  {s.scenario}  ({s.file})")
     typer.echo(f"共 {len(scs)} 个场景")
+
+
+@app.command()
+def diff(
+    base: str = typer.Option("HEAD~1", help="基线引用"),
+    head: str = typer.Option("HEAD", help="目标引用"),
+    repo: Path = typer.Option(".", help="被测仓库路径"),
+    module_map: Path = typer.Option("config/modules.yaml"),
+):
+    """输出变更文件及模块归属 JSON，供 AI 分析影响面。"""
+    files = changed_files(base, head, str(repo))
+    groups = classify(files, load_module_map(module_map))
+    typer.echo(
+        json.dumps({"base": base, "head": head, "groups": groups}, ensure_ascii=False, indent=2)
+    )
+
+
+@app.command()
+def plan(
+    base: str = typer.Option("HEAD~1"),
+    head: str = typer.Option("HEAD"),
+    repo: Path = typer.Option("."),
+    root: Path = typer.Option("scenarios"),
+    module_map: Path = typer.Option("config/modules.yaml"),
+    tags: Optional[str] = typer.Option(None, help="复用场景需包含的标签，逗号分隔"),
+    runs_dir: Path = typer.Option("reports/runs"),
+):
+    """创建即时层运行记录并输出执行计划骨架（复用场景清单 + 待补全意图）。"""
+    files = changed_files(base, head, str(repo))
+    groups = classify(files, load_module_map(module_map))
+    affected = sorted(m for m in groups if m != "__unmapped__")
+    tag_list = [t.strip() for t in tags.split(",")] if tags else None
+    scs, errors = load_scenarios(root)
+    reuse = [
+        s
+        for s in select(scs)
+        if s.module in affected and (not tag_list or set(tag_list) <= set(s.tags))
+    ]
+    rec = create_run(
+        base_ref=base,
+        head_ref=head,
+        affected_files=files,
+        affected_modules=affected,
+        planned_scenarios=[s.file for s in reuse],
+        runs_dir=str(runs_dir),
+    )
+    typer.echo(f"run_id: {rec.run_id}")
+    typer.echo(f"affected_modules: {', '.join(affected) if affected else '（无映射命中）'}")
+    for e in errors:
+        typer.secho(f"[跳过] {e}", fg=typer.colors.YELLOW, err=True)
+    for u in groups.get("__unmapped__", []):
+        typer.echo(f"unmapped: {u}")
+    for s in reuse:
+        typer.echo(f"reuse: [{s.priority.value}] {s.scenario} ({s.file})")
+    typer.echo(
+        f"\n下一步（Agent 编排）：\n"
+        f"  1. atk run --record-to {rec.run_id}   # 执行复用场景并入记录\n"
+        f"  2. 对无覆盖意图用 ego-browser 实测，然后\n"
+        f"     atk record {rec.run_id} --title ... --status pass|fail|suspect|blocked [--evidence 截图]\n"
+        f"  3. atk report {rec.run_id}"
+    )
 
 
 @app.command()
