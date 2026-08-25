@@ -23,8 +23,8 @@ def test_z():
 '''
 
 
-def _mk(tmp_path, body):
-    f = tmp_path / "gen_test.py"
+def _mk(tmp_path, body, name="gen_test.py"):
+    f = tmp_path / name
     f.write_text(textwrap.dedent(body), encoding="utf-8")
     return f
 
@@ -38,8 +38,8 @@ def test_diagnose_classifications(tmp_path):
 
 
 def test_doctor_command_exit_codes(tmp_path):
-    healthy = _mk(tmp_path, HEALTHY)
-    suspect = _mk(tmp_path, SUSPECT)
+    healthy = _mk(tmp_path, HEALTHY, "h_test.py")
+    suspect = _mk(tmp_path, SUSPECT, "s_test.py")
     r1 = CliRunner().invoke(app, ["doctor", str(healthy)])
     assert r1.exit_code == 0
     r2 = CliRunner().invoke(app, ["doctor", str(suspect)])
