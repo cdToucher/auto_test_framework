@@ -68,6 +68,7 @@ class Scenario(BaseModel):
     priority: Priority = Priority.P1
     tags: list[str] = Field(default_factory=list)
     env: str = "local"
+    data: str | None = None  # fixtures 文件路径，变量合并优先级 env < fixture < capture
     file: str = ""  # 来源路径，由 loader 填充
     steps: list[Step] = Field(default_factory=list)
 

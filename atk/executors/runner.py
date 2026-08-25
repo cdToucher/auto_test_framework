@@ -102,8 +102,37 @@ class Runner:
                         base_url=env.base_url, timeout=30, trust_env=env.trust_env
                     )
                     clients[name] = client
+                variables = dict(env.vars)
+                if sc.data:
+                    import yaml as _yaml
+
+                    fx = Path(sc.data)
+                    if not fx.exists():
+                        fx = self.scenarios_root.parent / sc.data
+                    if not fx.exists():
+                        result = ScenarioResult(
+                            scenario=sc,
+                            passed=False,
+                            error_class="config",
+                            steps=[
+                                StepResult(
+                                    f"fixtures:{sc.data}",
+                                    False,
+                                    f"fixture 文件不存在: {sc.data}",
+                                    error_class="config",
+                                )
+                            ],
+                        )
+                        result.duration_ms = 0
+                        report.results.append(result)
+                        if on_result:
+                            on_result(result)
+                        continue
+                    variables.update(
+                        _yaml.safe_load(fx.read_text(encoding="utf-8")) or {}
+                    )
                 t0 = time.perf_counter()
-                result = self._run_one(ApiExecutor(client, dict(env.vars)), sc)
+                result = self._run_one(ApiExecutor(client, variables), sc)
                 result.duration_ms = int((time.perf_counter() - t0) * 1000)
                 result.env = name
                 report.results.append(result)
