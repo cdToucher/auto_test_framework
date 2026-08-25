@@ -12,10 +12,11 @@ _VAR = re.compile(r"\$\{(\w+)\}")
 class EnvConfig(BaseModel):
     base_url: str
     vars: dict[str, Any] = {}
+    trust_env: bool = False  # 被测环境必须经系统代理访问时置 true
 
 
 def load_env(config_path: Path | str, name: str) -> EnvConfig:
-    data = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
+    data = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
     if name not in data:
         raise KeyError(f"环境 '{name}' 未在 {config_path} 中定义")
     return EnvConfig(**data[name])

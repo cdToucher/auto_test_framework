@@ -67,6 +67,13 @@ class MockHandler(BaseHTTPRequestHandler):
             self._json(200, {"code": 0, "data": {"list": lst}})
         elif self.path == "/ping":
             self._json(200, {"code": 0, "data": "pong"})
+        elif self.path == "/api/text":
+            body = b"plain text not json"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         else:
             self._json(404, {"code": 404})
 

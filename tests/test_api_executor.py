@@ -50,7 +50,41 @@ def test_environment_error_classification():
 def test_implicit_status_guard_when_no_expect(mock_client):
     ex = ApiExecutor(mock_client, {})
     r = ex.execute(ApiStep(call="POST /api/orders"))  # 无 token -> 401，且无显式断言
-    assert not r.passed and "400" in r.detail or "<400" in r.detail
+    assert not r.passed
+    assert "<400" in r.detail or "401" in r.detail
+
+
+def test_implicit_guard_fails_path_only_expect_on_error_status(mock_client):
+    ex = ApiExecutor(mock_client, {})
+    step = ApiStep(
+        call="POST /api/login",
+        body={"username": "a", "password": "b"},
+        expect=[],  # 只断言 body 字段、漏 status
+    )
+    from atk.store.models import ApiExpect as E2
+
+    step.expect = [E2(path="code", op="eq", value=401)]  # body 巧合匹配
+    r = ex.execute(step)
+    assert not r.passed and "隐式" in r.detail
+
+
+def test_invalid_call_format_is_config_error(mock_client):
+    ex = ApiExecutor(mock_client, {})
+    for bad_call in ("/ping", "FETCH /ping", "GET"):
+        r = ex.execute(ApiStep(call=bad_call))
+        assert not r.passed and r.error_class == "config"
+
+
+def test_non_json_response_capture_warns_not_crashes(mock_client):
+    ex = ApiExecutor(mock_client, {"token": "tok_demo123"})
+    r = ex.execute(
+        ApiStep(
+            call="GET /api/text",
+            expect=[],
+            capture={"x": "data.y"},
+        )
+    )
+    assert r.passed and "响应非 JSON" in r.detail and "capture" in r.detail
 
 
 def test_call_path_variable_substitution(mock_client):

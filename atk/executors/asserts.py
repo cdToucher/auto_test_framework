@@ -24,13 +24,19 @@ def get_path(data: Any, dotted: str) -> Any:
 
 
 def evaluate(response: httpx.Response, expect) -> tuple[bool, str]:
-    """返回 (是否通过, 失败原因)。expect 为 ApiExpect。"""
+    """返回 (是否通过, 失败原因)。expect 为 ApiExpect。
+
+    not_null 语义：非 MISSING 且不为 None/空串；[]/{}/0 视为"非空"。
+    """
     if expect.status is not None:
         if response.status_code != expect.status:
             return False, f"status 期望 {expect.status} 实际 {response.status_code}"
     if expect.path is None:
         return True, ""
-    body = response.json() if response.content else {}
+    try:
+        body = response.json() if response.content else {}
+    except ValueError:
+        return False, f"{expect.path} 无法断言：响应不是 JSON（{response.text[:120]!r}）"
     actual = get_path(body, expect.path)
     if expect.op == "not_null":
         ok = actual is not MISSING and actual not in (None, "")

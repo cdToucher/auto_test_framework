@@ -13,14 +13,24 @@ th,td{border-bottom:1px solid #e3e5e8;padding:8px;text-align:left;font-size:13px
 ul{padding-left:18px}li{margin:4px 0;font-size:13px;list-style:none}
 """
 
-_ROW = "<tr><td>{name}</td><td>{module}</td><td>{prio}</td><td class='{cls}'>{verdict}</td></tr>"
+_ROW = (
+    "<tr><td>{name}</td><td>{file}</td><td>{module}</td><td>{prio}</td>"
+    "<td class='{cls}'>{verdict}</td></tr>"
+)
 _STEP = "<li class='{cls}'>{mark} {title} — {detail}</li>"
-_VERDICT = {
-    "none": ("ok", "通过"),
-    "assertion": ("bad", "失败"),
-    "environment": ("warn", "环境异常"),
-    "ui_unsupported": ("warn", "UI未支持(M2)"),
-}
+
+
+def _verdict(r) -> tuple[str, str]:
+    if r.passed:
+        return "ok", "通过"
+    mapping = {
+        "assertion": ("bad", "失败"),
+        "config": ("bad", "配置错误"),
+        "environment": ("warn", "环境异常"),
+        "ui_unsupported": ("warn", "UI未支持(M2)"),
+        "empty": ("warn", "空场景"),
+    }
+    return mapping.get(r.error_class, ("bad", "失败"))
 
 
 def render_html(report: RunReport, out_path: Path | str) -> Path:
@@ -28,12 +38,11 @@ def render_html(report: RunReport, out_path: Path | str) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     rows, details = [], []
     for r in report.results:
-        cls, verdict = _VERDICT.get(r.error_class, ("bad", "失败"))
-        if r.passed:
-            cls, verdict = "ok", "通过"
+        cls, verdict = _verdict(r)
         rows.append(
             _ROW.format(
                 name=_html.escape(r.scenario.scenario),
+                file=_html.escape(r.scenario.file),
                 module=_html.escape(r.scenario.module),
                 prio=r.scenario.priority.value,
                 cls=cls,
@@ -49,16 +58,18 @@ def render_html(report: RunReport, out_path: Path | str) -> Path:
             )
             for s in r.steps
         )
-        details.append(f"<h3>{_html.escape(r.scenario.scenario)}</h3><ul>{lis}</ul>")
+        details.append(f"<h3>{_html.escape(r.scenario.scenario)}（env={_html.escape(r.env)}，{r.duration_ms}ms）</h3><ul>{lis}</ul>")
+    err_lines = "".join(f"<li class='warn'>{_html.escape(e)}</li>" for e in report.load_errors)
     doc = (
         "<!doctype html><html lang=zh><head><meta charset=utf-8><title>atk 报告</title>"
         f"<style>{_CSS}</style></head><body>"
         f"<h1>atk 测试报告 · env={_html.escape(report.env_name)} · {report.started_at}</h1>"
         f"<div class=sum>共 {report.total} 个场景："
         f"<span class=ok>通过 {report.passed_count}</span> / "
-        f"<span class=bad>未通过 {report.failed_count}</span>"
-        f"（其中环境异常 {report.environment_errors}）</div>"
-        "<table><tr><th>场景</th><th>模块</th><th>优先级</th><th>结论</th></tr>"
+        f"<span class=bad>用例失败 {report.failed_count}</span> / "
+        f"<span class=warn>受阻 {report.blocked_count}</span>（环境异常 {report.environment_errors}）</div>"
+        + (f"<ul>{err_lines}</ul>" if err_lines else "")
+        + "<table><tr><th>场景</th><th>文件</th><th>模块</th><th>优先级</th><th>结论</th></tr>"
         f"{''.join(rows)}</table>"
         f"<h2>步骤明细</h2>{''.join(details)}"
         "</body></html>"

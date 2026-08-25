@@ -6,10 +6,17 @@
 ## M1 已有能力
 
 - YAML 场景库：API 步骤确定性执行，UI 步骤占位（M2 接 ego-browser）
-- 多环境配置 + `${var}` 变量替换（headers/body/URL）+ 步骤间变量捕获
-- 断言：`status` / 点路径 `eq` / `not_null`；无显式断言时隐式要求 status<400
-- 环境错误与业务失败分类，HTML 报告输出
-- CLI：`atk list` / `atk run`
+- 多环境配置 + `${var}` 变量替换（headers/body/URL）+ 步骤间变量捕获（场景间隔离）
+- 断言：`status` / 点路径 `eq` / `not_null`；未显式断言 status 时隐式要求 status<400
+- 环境错误与用例失败分类：非 JSON 响应、服务不可达等不会中断整批执行
+- 坏场景文件逐个跳过并在报告/CLI 中提示，不连累其余场景
+- CLI：`atk list` / `atk run`（`--env` 可省略，省略时按场景自身 `env` 字段路由）
+
+**退出码**：`0`=全部通过；`1`=存在用例失败或场景加载错误（CI 门禁拦截）；
+`2`=仅环境受阻（提示检查环境，不判用例失败）。
+
+被测环境需经系统代理访问时，在 environments.yaml 对应环境下加 `trust_env: true`。
+真实口令勿入库：vars 中的敏感值建议由 CI 注入临时配置文件（`${env:VAR}` 支持规划中）。
 
 ## 快速开始
 
