@@ -27,6 +27,7 @@ class ApiStep(BaseModel):
     body: dict[str, Any] | None = None
     expect: list[ApiExpect] = Field(default_factory=list)
     capture: dict[str, str] = Field(default_factory=dict)  # 变量名 -> 响应点路径
+    retries: int = 1  # 仅环境类错误重试，断言失败不重试
 
 
 class UiStep(BaseModel):

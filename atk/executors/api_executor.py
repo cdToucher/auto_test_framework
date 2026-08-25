@@ -34,15 +34,24 @@ class ApiExecutor:
                 error_class="config",
             )
         method, path = parts[0].upper(), substitute(parts[1], self.variables)
-        try:
-            resp = self.client.request(
-                method,
-                path,
-                headers=substitute(step.headers, self.variables),
-                json=substitute(step.body, self.variables) if step.body is not None else None,
+        headers = substitute(step.headers, self.variables)
+        body = substitute(step.body, self.variables) if step.body is not None else None
+        resp = None
+        last_err: Exception | None = None
+        for attempt in range(step.retries + 1):
+            try:
+                resp = self.client.request(method, path, headers=headers, json=body)
+                last_err = None
+                break
+            except httpx.HTTPError as e:
+                last_err = e
+        if last_err is not None or resp is None:
+            return StepResult(
+                step.call,
+                False,
+                f"环境异常(重试{step.retries}次): {last_err}",
+                error_class="environment",
             )
-        except httpx.HTTPError as e:
-            return StepResult(step.call, False, f"环境异常: {e}", error_class="environment")
 
         failures = [
             why

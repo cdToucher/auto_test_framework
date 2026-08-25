@@ -87,6 +87,35 @@ def test_non_json_response_capture_warns_not_crashes(mock_client):
     assert r.passed and "响应非 JSON" in r.detail and "capture" in r.detail
 
 
+def test_environment_error_retries_then_passes():
+    calls = {"n": 0}
+
+    class Flaky:
+        def request(self, *a, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise httpx.ConnectError("boom")
+            return httpx.Response(200, json={"code": 0, "data": "pong"})
+
+    ex = ApiExecutor(Flaky(), {})
+    r = ex.execute(ApiStep(call="GET /ping"))
+    assert r.passed and calls["n"] == 2
+
+
+def test_environment_error_exhausts_retries():
+    calls = {"n": 0}
+
+    class Dead:
+        def request(self, *a, **kw):
+            calls["n"] += 1
+            raise httpx.ConnectError("boom")
+
+    ex = ApiExecutor(Dead(), {})
+    r = ex.execute(ApiStep(call="GET /ping", retries=2))
+    assert not r.passed and r.error_class == "environment"
+    assert calls["n"] == 3 and "重试2次" in r.detail
+
+
 def test_call_path_variable_substitution(mock_client):
     ex = ApiExecutor(mock_client, {"token": "tok_demo123", "test_sku": "SKU-001"})
     create = ApiStep(
