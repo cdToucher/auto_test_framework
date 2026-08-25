@@ -76,3 +76,59 @@ def render_html(report: RunReport, out_path: Path | str) -> Path:
     )
     out_path.write_text(doc, encoding="utf-8")
     return out_path
+
+
+_RUN_STATUS = {
+    "pass": ("ok", "通过"),
+    "fail": ("bad", "失败"),
+    "suspect": ("warn", "疑似"),
+    "blocked": ("warn", "受阻"),
+}
+
+
+def render_run_html(rec, out_path: Path | str) -> Path:
+    """渲染即时层运行记录（RunRecord）为 HTML 报告。"""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    srows, intents = [], []
+    for s in rec.scenarios:
+        cls, verdict = ("ok", "通过") if s.passed else ("bad", s.error_class)
+        srows.append(
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td class='{}'>{}</td></tr>".format(
+                _html.escape(s.name), _html.escape(s.file), _html.escape(s.priority),
+                cls, _html.escape(str(verdict)),
+            )
+        )
+    for i in rec.intents:
+        cls, label = _RUN_STATUS.get(i.status, ("bad", i.status))
+        imgs = "".join(
+            f"<a href='{_html.escape(e)}'><img src='{_html.escape(e)}' "
+            "style='max-width:320px;border:1px solid #ddd;margin:4px'></a>"
+            for e in i.evidence
+        )
+        intents.append(
+            f"<li class='{cls}'>[{_html.escape(label)}] {_html.escape(i.title)}"
+            + (f" — {_html.escape(i.note)}" if i.note else "")
+            + (f"<br>{imgs}" if imgs else "")
+            + "</li>"
+        )
+    passed_n = sum(1 for s in rec.scenarios if s.passed)
+    doc = (
+        "<!doctype html><html lang=zh><head><meta charset=utf-8>"
+        f"<title>atk 运行报告 {rec.run_id}</title><style>{_CSS}</style></head><body>"
+        f"<h1>即时层运行报告 · {rec.run_id} · {rec.created_at}</h1>"
+        f"<div class=sum>基线 {_html.escape(rec.base_ref)} → "
+        f"{_html.escape(rec.head_ref)}　受影响模块："
+        f"{_html.escape(', '.join(rec.affected_modules) or '无')}<br>"
+        f"复用场景 {len(rec.scenarios)} 个（通过 {passed_n}），"
+        f"探索意图 {len(rec.intents)} 条</div>"
+        "<details open><summary>受影响文件"
+        f"（{len(rec.affected_files)}）</summary><pre>"
+        f"{_html.escape(chr(10).join(rec.affected_files))}</pre></details>"
+        "<table><tr><th>场景</th><th>文件</th><th>优先级</th><th>结论</th></tr>"
+        f"{''.join(srows)}</table>"
+        "<h2>探索意图</h2><ul>" + "".join(intents) + "</ul>"
+        "</body></html>"
+    )
+    out_path.write_text(doc, encoding="utf-8")
+    return out_path

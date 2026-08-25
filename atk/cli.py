@@ -8,7 +8,7 @@ import typer
 from .diff_analyzer.git_diff import changed_files
 from .diff_analyzer.modules import classify, load_module_map
 from .executors.runner import Runner
-from .reporter.html_reporter import render_html
+from .reporter.html_reporter import render_html, render_run_html
 from .run_store import IntentRecord, add_evidence, create_run, load_run, save_run, summarize
 from .store.loader import load_scenarios, select
 from .store.models import Priority
@@ -182,6 +182,21 @@ def run(
         save_run(rec, str(runs_dir))
         typer.echo(f"已并入运行记录 {record_to}")
     raise typer.Exit(code=report.exit_code)
+
+
+@app.command()
+def report(
+    run_id: str,
+    runs_dir: Path = typer.Option("reports/runs"),
+):
+    """渲染运行记录为 HTML 报告。"""
+    try:
+        rec = load_run(run_id, str(runs_dir))
+    except KeyError as e:
+        typer.secho(str(e), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    out = render_run_html(rec, Path(runs_dir) / run_id / "report.html")
+    typer.echo(f"报告：{out}")
 
 
 def main():
