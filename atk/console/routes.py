@@ -58,7 +58,7 @@ def _run_summaries(root: Path) -> list[dict]:
 
 def setup(app):
     root = lambda: app.state.project_root  # noqa: E731
-    jobs = app.state.jobs
+    jobs = lambda: app.state.jobs  # noqa: E731
     r = APIRouter(prefix="/api")
 
     @r.get("/health")
@@ -164,7 +164,7 @@ def setup(app):
         if body.module:
             argv += ["--module", body.module]
         try:
-            jid = jobs.start(argv, cwd=str(root()))
+            jid = jobs().start(argv, cwd=str(root()))
         except BusyError as e:
             return JSONResponse(status_code=409, content={"detail": str(e)})
         return {"job_id": jid}
@@ -173,7 +173,7 @@ def setup(app):
     def stream(job_id: str):
         def gen():
             try:
-                for ev in jobs.stream(job_id):
+                for ev in jobs().stream(job_id):
                     yield f"event: {ev['type']}\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
             except KeyError:
                 yield f"event: done\ndata: {json.dumps({'type': 'done', 'exit_code': -1})}\n\n"
@@ -258,7 +258,7 @@ def setup(app):
         if not task:
             raise HTTPException(404, name)
         try:
-            jid = jobs.start(
+            jid = jobs().start(
                 [sys.executable, "-m", "atk", "run", "--env", str(task["env"])]
                 + (["--module", str(task["module"])] if task.get("module") else []),
                 cwd=str(root()),
