@@ -1,5 +1,6 @@
 """控制台全部路由（原型期单文件）。每次 setup 生成独立 router，避免跨应用闭包污染。"""
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -62,7 +63,47 @@ def setup(app):
 
     @r.get("/health")
     def health():
-        return {"ok": True}
+        return {"ok": True, "global": bool(app.state.global_mode)}
+
+    # ---------- 全局模式：项目注册表 ----------
+
+    if app.state.global_mode:
+        from . import registry as reg
+
+        @r.get("/projects")
+        def projects():
+            reg.rebuild_index()
+            return {"projects": reg.list_projects()}
+
+        @r.post("/projects")
+        def add_project(body: dict):
+            p = Path(str(body.get("path", ""))).expanduser().resolve()
+            if not (p / "scenarios").is_dir():
+                raise HTTPException(422, f"{p} 不是有效的 atk 工程（缺少 scenarios/）")
+            reg.upsert_project(p)
+            reg.rebuild_index()
+            return {"ok": True}
+
+        @r.delete("/projects")
+        def del_project(path: str):
+            reg.remove_project(str(Path(path).resolve()))
+            return {"ok": True}
+
+        @r.post("/projects/open")
+        def open_project(body: dict):
+            """为指定项目起独立端口子服务，返回可打开的 URL。"""
+            import socket
+
+            p = Path(str(body.get("path", ""))).resolve()
+            if str(p) not in {x["path"] for x in reg.list_projects()}:
+                raise HTTPException(404, "未注册的项目")
+            with socket.socket() as s:
+                s.bind(("127.0.0.1", 0))
+                port = s.getsockname()[1]
+            argv = [sys.executable, "-m", "atk.cli", "console",
+                    "--port", str(port), "--project-root", str(p)]
+            subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return {"url": f"http://127.0.0.1:{port}"}
 
     @r.get("/tree")
     def tree():
@@ -74,7 +115,7 @@ def setup(app):
             data, mtime = repo.load_scenario(root(), rel)
         except repo.YamlError as e:
             raise HTTPException(422, str(e))
-        except FileNotFoundError:
+        except (FileNotFoundError, ValueError):
             raise HTTPException(404, rel)
         return {"data": data, "mtime": mtime}
 

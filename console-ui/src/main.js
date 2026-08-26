@@ -9,6 +9,7 @@ import Editor from './views/Editor.vue'
 import RunView from './views/RunView.vue'
 import History from './views/History.vue'
 import Settings from './views/Settings.vue'
+import GlobalHome from './views/GlobalHome.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -18,6 +19,7 @@ const router = createRouter({
     { path: '/run', component: RunView },
     { path: '/history', component: History },
     { path: '/settings', component: Settings },
+    { path: '/global', component: GlobalHome },
   ],
 })
 

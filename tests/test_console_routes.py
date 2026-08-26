@@ -13,7 +13,7 @@ def client(tmp_path: Path):
 
 
 def test_health(client):
-    assert client.get("/api/health").json() == {"ok": True}
+    assert client.get("/api/health").json()["ok"] is True
 
 
 GOOD = """\
@@ -80,7 +80,9 @@ def test_validate_endpoint(c):
 
 
 def test_path_traversal_blocked(c):
-    assert c.get("/api/scenarios/../config/environments.yaml").status_code in (400, 404)
+    # httpx 会规范化字面 ../，用 %2e%2e 确保打到后端
+    assert c.get("/api/scenarios/%2e%2e/config/environments.yaml").status_code in (400, 404, 422)
+    assert c.get("/api/scenarios/..%2fconfig%2fenvironments.yaml").status_code in (400, 404, 422)
 
 
 RUN_YAML = """\
@@ -125,8 +127,9 @@ def test_runs_history_and_evidence(c, proj):
 
     r = c.get("/api/runs/smoke-test-1/evidence/evidence/shot.png")
     assert r.status_code == 200 and r.content.startswith(b"\x89PNG")
-    # 越界拒绝
-    assert c.get("/api/runs/smoke-test-1/evidence/../../config/environments.yaml").status_code == 404
+    # 越界拒绝（%2e%2e 编码穿越，确保到达后端守卫）
+    r = c.get("/api/runs/smoke-test-1/evidence/%2e%2e/%2e%2e/config/environments.yaml")
+    assert r.status_code == 404
 
 
 def test_run_endpoint_starts_job(c, proj, monkeypatch):
