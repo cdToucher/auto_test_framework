@@ -12,6 +12,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+console = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "apscheduler>=3.10"]
 
 [project.scripts]
 atk = "atk.cli:main"
