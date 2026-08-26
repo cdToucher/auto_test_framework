@@ -144,4 +144,32 @@ def setup(app):
             raise HTTPException(404, name)
         return FileResponse(p)
 
+    # ---------- 配置 ----------
+
+    @r.get("/environments")
+    def get_environments():
+        f = root() / "config" / "environments.yaml"
+        return {"raw": f.read_text(encoding="utf-8") if f.exists() else ""}
+
+    @r.put("/environments")
+    def put_environments(body: dict):
+        f = root() / "config" / "environments.yaml"
+        yaml.safe_load(body["raw"])  # 语法门禁
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(body["raw"], encoding="utf-8")
+        return {"ok": True}
+
+    @r.get("/modules")
+    def get_modules():
+        f = root() / "config" / "modules.yaml"
+        return {"raw": f.read_text(encoding="utf-8") if f.exists() else ""}
+
+    @r.put("/modules")
+    def put_modules(body: dict):
+        f = root() / "config" / "modules.yaml"
+        yaml.safe_load(body["raw"])
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(body["raw"], encoding="utf-8")
+        return {"ok": True}
+
     app.include_router(r)

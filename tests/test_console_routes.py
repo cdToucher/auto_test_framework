@@ -156,3 +156,15 @@ def test_run_endpoint_starts_job(c, proj, monkeypatch):
                 import json
                 events.append(json.loads(line[5:]))
     assert events[-1] == {"type": "done", "exit_code": 0}
+
+
+def test_config_endpoints(c, proj):
+    (proj / "config").mkdir()
+    (proj / "config" / "environments.yaml").write_text(
+        "local:\n  base_url: http://x\n  vars:\n    t: '${env:TOK}'\n", encoding="utf-8")
+    body = c.get("/api/environments").json()
+    assert body["raw"].startswith("local:")
+
+    new_raw = "staging:\n  base_url: http://y\n"
+    assert c.put("/api/environments", json={"raw": new_raw}).status_code == 200
+    assert "staging" in c.get("/api/environments").json()["raw"]

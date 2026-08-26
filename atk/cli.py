@@ -381,3 +381,15 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+@app.command("console")
+def console_cmd(
+    port: int = typer.Option(8900, help="监听端口"),
+    g: bool = typer.Option(False, "--global", "-g", help="全局聚合模式"),
+    project_root: Path = typer.Option(None, help="项目根目录（默认当前目录）"),
+):
+    """启动 Web 控制台（本机 127.0.0.1）。"""
+    from .console import serve
+
+    serve(port=port, global_mode=g, project_root=project_root)
