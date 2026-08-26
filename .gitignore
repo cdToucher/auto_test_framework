@@ -5,3 +5,5 @@ __pycache__/
 dist/
 reports/
 .pytest_cache/
+
+console-ui/node_modules/
