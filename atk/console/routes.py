@@ -160,7 +160,7 @@ def setup(app):
 
     @r.post("/run")
     def run(body: RunBody):
-        argv = [sys.executable, "-m", "atk.cli", "run", "--env", body.env]
+        argv = [sys.executable, "-m", "atk", "run", "--env", body.env, "--record-new"]
         if body.module:
             argv += ["--module", body.module]
         try:
@@ -259,7 +259,8 @@ def setup(app):
             raise HTTPException(404, name)
         try:
             jid = jobs().start(
-                [sys.executable, "-m", "atk", "run", "--env", str(task["env"])]
+                [sys.executable, "-m", "atk", "run", "--env", str(task["env"]),
+                 "--record-new"]
                 + (["--module", str(task["module"])] if task.get("module") else []),
                 cwd=str(root()),
             )

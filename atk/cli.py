@@ -158,6 +158,7 @@ def run(
     root: Path = typer.Option("scenarios"),
     report_dir: Path = typer.Option("reports"),
     record_to: Optional[str] = typer.Option(None, help="把本次结果并入指定运行记录"),
+    record_new: bool = typer.Option(False, "--record-new", help="新建一条运行记录并写入 reports/runs"),
     runs_dir: Path = typer.Option("reports/runs"),
     junit: Optional[Path] = typer.Option(None, help="同时输出 JUnit XML 到指定路径"),
 ):
@@ -197,6 +198,11 @@ def run(
     if junit:
         jp = write_junit(report, junit)
         typer.echo(f"JUnit：{jp}")
+    if record_new:
+        rec = create_run(runs_dir=runs_dir)
+        rec.scenarios.extend(summarize(r) for r in report.results)
+        save_run(rec, str(runs_dir))
+        typer.echo(f"已写入运行记录 {rec.run_id}")
     if record_to:
         try:
             rec = load_run(record_to, str(runs_dir))

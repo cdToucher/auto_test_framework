@@ -51,6 +51,13 @@ def create_app(project_root: Path | None = None, global_mode: bool = False) -> F
 
 def serve(port: int = 8900, global_mode: bool = False, project_root: Path | None = None):
     """注册当前项目（非 -g）并启动 uvicorn。"""
+    import logging
+
+    logging.basicConfig(level=logging.DEBUG,
+                        format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    for noisy in ("httpx", "httpcore", "uvicorn.access", "urllib3"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
     root = (project_root or Path.cwd()).resolve()
     if not global_mode:
         from .registry import upsert_project

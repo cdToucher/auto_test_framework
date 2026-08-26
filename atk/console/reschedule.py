@@ -3,11 +3,12 @@ from . import schedules as _sch
 
 
 def reschedule(app) -> None:
-    """按 config/schedules.yaml 重建调度任务。"""
+    """按 config/schedules.yaml 重建调度任务。启动前调用也安全（先清后加）。"""
     sched = app.state.scheduler
-    if not sched.running:
-        return
-    sched.remove_all_jobs()
+    try:
+        sched.remove_all_jobs()
+    except Exception:
+        pass
     for t in _sch.load_tasks(app.state.project_root):
         trigger = _sch.cron_trigger_of(t)
         if not trigger:
@@ -19,10 +20,11 @@ def reschedule(app) -> None:
 
 
 def fire_task(app, task: dict) -> None:
-    """定时触发：走执行管线；忙时跳过（规格：不做错过补偿）。"""
+    """定时触发：走执行管线并写入运行记录；忙时跳过（规格：不做错过补偿）。"""
     import sys
 
-    argv = [sys.executable, "-m", "atk", "run", "--env", str(task["env"])]
+    argv = [sys.executable, "-m", "atk", "run", "--env", str(task["env"]),
+            "--record-new"]
     if task.get("module"):
         argv += ["--module", str(task["module"])]
     try:

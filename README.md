@@ -34,7 +34,9 @@ atk console -g       # 全局模式：注册/管理多个 atk 工程，一键拉
 
 功能：场景树浏览、表单化编排（API/UI 步骤卡片 ⇄ YAML 源码双模式，保存前强制校验，
 mtime 乐观锁防外部覆盖）、触发执行（SSE 实时日志）、运行历史与截图证据、
-环境/模块配置编辑。前端构建产物已入库，无需 Node 环境。
+环境/模块配置编辑、**定时任务**（`config/schedules.yaml` 定义 cron 或"每天 HH:MM"，
+APScheduler 到点自动执行并写入运行记录；控制台需常驻，停机不补跑）。
+界面/CLI 触发的执行均带 `--record-new` 自动入历史。前端构建产物已入库，无需 Node 环境。
 
 其他项目使用：`uv tool install --editable ".[console]" /path/to/auto_test_framework`
 后即获得全局 `atk` 命令；目标项目内 `atk init && atk console`。

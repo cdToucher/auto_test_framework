@@ -1,0 +1,5 @@
+tasks:
+- name: 冒烟每分钟
+  env: demoapp
+  cron: '* * * * *'
+  enabled: false
