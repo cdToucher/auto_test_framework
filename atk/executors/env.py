@@ -1,4 +1,5 @@
-"""环境配置加载与 ${var} 替换。"""
+"""环境配置加载与 ${var} / ${env:VAR} 替换。"""
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -7,6 +8,7 @@ import yaml
 from pydantic import BaseModel
 
 _VAR = re.compile(r"\$\{(\w+)\}")
+_ENV_VAR = re.compile(r"\$\{env:([A-Za-z_]\w*)\}")
 
 
 class EnvConfig(BaseModel):
@@ -19,12 +21,16 @@ def load_env(config_path: Path | str, name: str) -> EnvConfig:
     data = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
     if name not in data:
         raise KeyError(f"环境 '{name}' 未在 {config_path} 中定义")
-    return EnvConfig(**data[name])
+    cfg = EnvConfig(**data[name])
+    # vars 中的 ${env:NAME} 在加载期即解析，避免占位符透传到请求
+    cfg.vars = {k: substitute(v, {}) for k, v in cfg.vars.items()}
+    return cfg
 
 
 def substitute(node: Any, variables: dict) -> Any:
-    """递归替换字符串中的 ${name}；整串匹配时保留原始类型。"""
+    """递归替换字符串中的 ${name} 与 ${env:NAME}；整串匹配时保留原始类型。"""
     if isinstance(node, str):
+        node = _ENV_VAR.sub(lambda m: os.environ.get(m.group(1), ""), node)
         m = _VAR.fullmatch(node)
         if m:
             return variables.get(m.group(1), node)

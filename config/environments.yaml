@@ -10,3 +10,14 @@ demoapp:
   vars:
     username: alice
     password: secret123
+
+# 正式项目：信飞诉调系统测试环境（Cookie+token 双凭证）
+# 用法：登录后导出两样东西注入环境变量再跑：
+#   export ATK_XF_COOKIE="token=...; orgId=..."   （完整 Cookie，9 条）
+#   export ATK_XF_TOKEN="dac581dc..."             （请求头 token，32位hex）
+xinfei:
+  base_url: "https://xinfei-test.anmiai.com"
+  trust_env: false
+  vars:
+    xf_cookie: "${env:ATK_XF_COOKIE}"
+    xf_token: "${env:ATK_XF_TOKEN}"

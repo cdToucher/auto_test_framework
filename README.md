@@ -22,7 +22,8 @@
 
 执行质量特性：环境错误自动重试（`retries` 默认 1）、非 JSON 响应保护、
 场景级 fixtures 数据（`data:` 字段）、变量捕获场景间隔离、退出码三态
-（0 通过 / 1 失败 / 2 受阻或配置问题）。
+（0 通过 / 1 失败 / 2 受阻或配置问题）、`${env:VAR}` 敏感值注入
+（口令/会话凭证不入库，加载期解析）。
 
 ## Demo 被测系统
 
@@ -30,6 +31,18 @@
 （pending→done，重复完成 409）、参数校验（空标题 422）与 Web 页面，
 配套场景库在 `scenarios/demo_app/`——覆盖正向链路、负向断言与 UI 探索，
 是框架各能力的端到端示例。
+
+## 接入真实项目示例：信飞诉调系统
+
+`scenarios/xinfei/` + `config/environments.yaml[xinfei]` 演示了对已部署
+测试环境（https://xinfei-test.anmiai.com）的接入方式：Cookie+token 双凭证
+经 `${env:VAR}` 注入，只读接口冒烟先行。日常用法：
+
+```bash
+export ATK_XF_COOKIE="token=...; orgId=..."   # 登录后从 DevTools 导出
+export ATK_XF_TOKEN="dac581dc..."
+atk run --env xinfei --module seal
+```
 
 ## 快速开始
 
