@@ -29,7 +29,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 const projects = ref([])
 const loading = ref(true)
 const newPath = ref('')
-const base = 'http://127.0.0.1:8900'
+const base = ''
 
 async function load() {
   loading.value = true
@@ -63,8 +63,13 @@ async function open(row) {
   })
   const j = await r.json()
   if (!r.ok) { ElMessage.error(j.detail || '启动失败'); return }
-  window.open(j.url, '_blank')
-  ElMessage.success('已在新端口启动，浏览器可能拦截弹窗，请允许')
+  const w = window.open(j.url, '_blank')
+  if (!w) {
+    ElMessage({ message: '弹窗被拦截，已在本页打开', type: 'info' })
+    setTimeout(() => { location.href = j.url }, 600)
+  } else {
+    ElMessage.success('已启动')
+  }
 }
 
 onMounted(load)

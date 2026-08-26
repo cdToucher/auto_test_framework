@@ -100,7 +100,7 @@ def setup(app):
             with socket.socket() as s:
                 s.bind(("127.0.0.1", 0))
                 port = s.getsockname()[1]
-            argv = [sys.executable, "-m", "atk.cli", "console",
+            argv = [sys.executable, "-m", "atk", "console",
                     "--port", str(port), "--project-root", str(p)]
             subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return {"url": f"http://127.0.0.1:{port}"}
