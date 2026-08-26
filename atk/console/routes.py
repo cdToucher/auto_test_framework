@@ -96,6 +96,21 @@ def setup(app):
         errs = repo.validate_scenario(body.get("data") or {})
         return {"ok": not errs, "errors": errs}
 
+    @r.post("/parse")
+    def parse(body: dict):
+        """YAML 文本 → dict（编辑器源码模式转表单用）。"""
+        try:
+            data = yaml.safe_load(body.get("raw") or "")
+        except yaml.YAMLError as e:
+            line = getattr(getattr(e, "problem_mark", None), "line", None)
+            raise HTTPException(422, f"YAML 解析失败 line={line + 1 if line is not None else '?'}")
+        return {"data": data if isinstance(data, dict) else {}}
+
+    @r.post("/render")
+    def render(body: dict):
+        """dict → YAML 文本（表单转源码用）。"""
+        return {"raw": repo.render_yaml(body.get("data") or {})}
+
     # ---------- 执行 ----------
 
     class RunBody(BaseModel):
