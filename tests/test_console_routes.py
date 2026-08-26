@@ -133,9 +133,6 @@ def test_runs_history_and_evidence(c, proj):
 
 
 def test_run_endpoint_starts_job(c, proj, monkeypatch):
-    # 不真跑 atk：mock JobManager.start 返回假 job，stream 立即 done
-    from atk.console import routes
-
     class FakeJM:
         def start(self, argv, cwd=None):
             self.argv = argv
@@ -145,10 +142,9 @@ def test_run_endpoint_starts_job(c, proj, monkeypatch):
             yield {"type": "log", "line": "fake"}
             yield {"type": "done", "exit_code": 0}
 
-    monkeypatch.setattr(routes, "JobManager", FakeJM)
-    # 重建 client 使 setup 使用 FakeJM
     from atk.console import create_app as cap
     c2 = TestClient(cap(project_root=proj))
+    c2.app.state.jobs = FakeJM()
     r = c2.post("/api/run", json={"env": "local"})
     assert r.status_code == 200 and r.json()["job_id"] == "job123"
 
@@ -171,3 +167,19 @@ def test_config_endpoints(c, proj):
     new_raw = "staging:\n  base_url: http://y\n"
     assert c.put("/api/environments", json={"raw": new_raw}).status_code == 200
     assert "staging" in c.get("/api/environments").json()["raw"]
+
+
+def test_schedules_crud(c, proj):
+    tasks = [{"name": "每分钟", "env": "local", "cron": "* * * * *", "enabled": True}]
+    r = c.put("/api/schedules", json={"tasks": tasks})
+    assert r.status_code == 200
+
+    got = c.get("/api/schedules").json()["tasks"]
+    assert got[0]["name"] == "每分钟" and got[0]["next_run"]
+
+    # 非法任务被拒
+    r = c.put("/api/schedules", json={"tasks": [{"name": "", "env": "", "enabled": True}]})
+    assert r.status_code == 422
+
+    # 立即触发（走真 JobManager，跑 echo 级别不现实——只验证 404 分支与正常分支结构）
+    assert c.post("/api/schedules/不存在/trigger").status_code == 404

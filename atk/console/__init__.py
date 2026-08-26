@@ -1,8 +1,11 @@
 """Web 控制台：FastAPI 应用（可选依赖 fastapi/uvicorn）。"""
 from pathlib import Path
 
+from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
+
+from .jobs import JobManager
 
 _STATIC = Path(__file__).parent / "static"
 
@@ -11,10 +14,27 @@ def create_app(project_root: Path | None = None, global_mode: bool = False) -> F
     app = FastAPI(title="atk console", docs_url=None, redoc_url=None)
     app.state.project_root = project_root or Path.cwd()
     app.state.global_mode = global_mode
+    app.state.jobs = JobManager()
+    app.state.scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
 
     from . import routes
 
     routes.setup(app)
+
+    @app.on_event("startup")
+    def _start_scheduler():
+        if not app.state.global_mode:
+            from .reschedule import reschedule
+
+            reschedule(app)
+        app.state.scheduler.start()
+
+    @app.on_event("shutdown")
+    def _stop_scheduler():
+        try:
+            app.state.scheduler.shutdown(wait=False)
+        except Exception:
+            pass
 
     if _STATIC.joinpath("index.html").is_file():
 

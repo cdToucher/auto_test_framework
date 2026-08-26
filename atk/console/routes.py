@@ -58,7 +58,7 @@ def _run_summaries(root: Path) -> list[dict]:
 
 def setup(app):
     root = lambda: app.state.project_root  # noqa: E731
-    jobs = JobManager()
+    jobs = app.state.jobs
     r = APIRouter(prefix="/api")
 
     @r.get("/health")
@@ -227,5 +227,44 @@ def setup(app):
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text(body["raw"], encoding="utf-8")
         return {"ok": True}
+
+    # ---------- 定时任务 ----------
+
+    @r.get("/schedules")
+    def get_schedules():
+        from . import schedules as sch
+
+        tasks = [dict(t, next_run=sch.next_run_of(t)) for t in sch.load_tasks(root())]
+        return {"tasks": tasks}
+
+    @r.put("/schedules")
+    def put_schedules(body: dict):
+        from . import schedules as sch
+        from . import reschedule
+
+        tasks = body.get("tasks") or []
+        try:
+            sch.save_tasks(root(), tasks)
+        except sch.ScheduleError as e:
+            raise HTTPException(422, str(e))
+        reschedule.reschedule(app)  # 立即按新配置重建调度
+        return {"ok": True}
+
+    @r.post("/schedules/{name}/trigger")
+    def trigger_schedule(name: str):
+        from . import schedules as sch
+
+        task = next((t for t in sch.load_tasks(root()) if t.get("name") == name), None)
+        if not task:
+            raise HTTPException(404, name)
+        try:
+            jid = jobs.start(
+                [sys.executable, "-m", "atk", "run", "--env", str(task["env"])]
+                + (["--module", str(task["module"])] if task.get("module") else []),
+                cwd=str(root()),
+            )
+        except BusyError as e:
+            return JSONResponse(status_code=409, content={"detail": str(e)})
+        return {"job_id": jid}
 
     app.include_router(r)
