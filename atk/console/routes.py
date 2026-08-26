@@ -1,9 +1,15 @@
 """控制台全部路由（原型期单文件）。每次 setup 生成独立 router，避免跨应用闭包污染。"""
+import json
+import sys
+from pathlib import Path
+
+import yaml
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from . import repo
+from .jobs import BusyError, JobManager
 
 
 class SaveBody(BaseModel):
@@ -13,9 +19,46 @@ class SaveBody(BaseModel):
     force: bool = False
 
 
+def _run_summaries(root: Path) -> list[dict]:
+    runs_dir = root / "reports" / "runs"
+    out = []
+    if not runs_dir.exists():
+        return out
+    for d in sorted(runs_dir.iterdir(), reverse=True):
+        f = d / "run.yaml"
+        if not f.is_file():
+            continue
+        try:
+            rec = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+        except Exception:
+            continue
+        scs = rec.get("scenarios") or []
+        out.append({
+            "run_id": rec.get("run_id", d.name),
+            "created_at": rec.get("created_at"),
+            "pass_n": sum(1 for s in scs if s.get("passed")),
+            "fail_n": sum(1 for s in scs if not s.get("passed")),
+            "scenarios": [
+                {
+                    "name": s.get("name"), "file": s.get("file"),
+                    "module": s.get("module"), "priority": s.get("priority"),
+                    "passed": s.get("passed"), "error_class": s.get("error_class"),
+                    "duration_ms": s.get("duration_ms"),
+                    "steps": [
+                        {"title": st.get("title"), "passed": st.get("passed"),
+                         "detail": st.get("detail")}
+                        for st in (s.get("steps") or [])
+                    ],
+                } for s in scs
+            ],
+        })
+    return out
+
+
 def setup(app):
     root = lambda: app.state.project_root  # noqa: E731
-    r = APIRouter(prefix="/api", dependencies=[])
+    jobs = JobManager()
+    r = APIRouter(prefix="/api")
 
     @r.get("/health")
     def health():
@@ -52,5 +95,53 @@ def setup(app):
     def validate(body: dict):
         errs = repo.validate_scenario(body.get("data") or {})
         return {"ok": not errs, "errors": errs}
+
+    # ---------- 执行 ----------
+
+    class RunBody(BaseModel):
+        env: str
+        module: str | None = None
+
+    @r.post("/run")
+    def run(body: RunBody):
+        argv = [sys.executable, "-m", "atk.cli", "run", "--env", body.env]
+        if body.module:
+            argv += ["--module", body.module]
+        try:
+            jid = jobs.start(argv, cwd=str(root()))
+        except BusyError as e:
+            return JSONResponse(status_code=409, content={"detail": str(e)})
+        return {"job_id": jid}
+
+    @r.get("/jobs/{job_id}/stream")
+    def stream(job_id: str):
+        def gen():
+            try:
+                for ev in jobs.stream(job_id):
+                    yield f"event: {ev['type']}\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
+            except KeyError:
+                yield f"event: done\ndata: {json.dumps({'type': 'done', 'exit_code': -1})}\n\n"
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    # ---------- 历史 ----------
+
+    @r.get("/runs")
+    def runs(limit: int = 20):
+        return _run_summaries(root())[:limit]
+
+    @r.get("/runs/{run_id}/report")
+    def run_report(run_id: str):
+        p = root() / "reports" / "runs" / run_id / "report.html"
+        if not p.is_file():
+            raise HTTPException(404, run_id)
+        return FileResponse(p)
+
+    @r.get("/runs/{run_id}/evidence/{name:path}")
+    def evidence(run_id: str, name: str):
+        base = (root() / "reports" / "runs" / run_id).resolve()
+        p = (base / name).resolve()
+        if not p.is_file() or not p.is_relative_to(base):
+            raise HTTPException(404, name)
+        return FileResponse(p)
 
     app.include_router(r)

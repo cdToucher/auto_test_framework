@@ -81,3 +81,78 @@ def test_validate_endpoint(c):
 
 def test_path_traversal_blocked(c):
     assert c.get("/api/scenarios/../config/environments.yaml").status_code in (400, 404)
+
+
+RUN_YAML = """\
+run_id: smoke-test-1
+created_at: '2026-08-26T10:00:00'
+scenarios:
+- name: 用例A
+  file: scenarios/x/a.yaml
+  module: x
+  priority: P0
+  passed: true
+  duration_ms: 5
+  steps:
+  - title: GET /a
+    passed: true
+    detail: ok
+- name: 用例B
+  file: scenarios/x/b.yaml
+  module: x
+  priority: P1
+  passed: false
+  error_class: assertion
+  duration_ms: 8
+  steps:
+  - title: GET /b
+    passed: false
+    detail: 'expect 200 got 500'
+"""
+
+
+def test_runs_history_and_evidence(c, proj):
+    rd = proj / "reports" / "runs" / "smoke-test-1"
+    rd.mkdir(parents=True)
+    (rd / "run.yaml").write_text(RUN_YAML, encoding="utf-8")
+    ev = rd / "evidence"
+    ev.mkdir()
+    (ev / "shot.png").write_bytes(b"\x89PNG fake")
+
+    runs = c.get("/api/runs").json()
+    assert runs[0]["run_id"] == "smoke-test-1"
+    assert runs[0]["pass_n"] == 1 and runs[0]["fail_n"] == 1
+
+    r = c.get("/api/runs/smoke-test-1/evidence/evidence/shot.png")
+    assert r.status_code == 200 and r.content.startswith(b"\x89PNG")
+    # 越界拒绝
+    assert c.get("/api/runs/smoke-test-1/evidence/../../config/environments.yaml").status_code == 404
+
+
+def test_run_endpoint_starts_job(c, proj, monkeypatch):
+    # 不真跑 atk：mock JobManager.start 返回假 job，stream 立即 done
+    from atk.console import routes
+
+    class FakeJM:
+        def start(self, argv, cwd=None):
+            self.argv = argv
+            return "job123"
+
+        def stream(self, jid):
+            yield {"type": "log", "line": "fake"}
+            yield {"type": "done", "exit_code": 0}
+
+    monkeypatch.setattr(routes, "JobManager", FakeJM)
+    # 重建 client 使 setup 使用 FakeJM
+    from atk.console import create_app as cap
+    c2 = TestClient(cap(project_root=proj))
+    r = c2.post("/api/run", json={"env": "local"})
+    assert r.status_code == 200 and r.json()["job_id"] == "job123"
+
+    events = []
+    with c2.stream("GET", "/api/jobs/job123/stream") as resp:
+        for line in resp.iter_lines():
+            if line.startswith("data:"):
+                import json
+                events.append(json.loads(line[5:]))
+    assert events[-1] == {"type": "done", "exit_code": 0}
