@@ -147,9 +147,9 @@ function stepToView(raw) {
     const a = raw.api
     const [method, ...rest] = String(a.call || '').split(' ')
     const expectMap = {}
-    for (const e of a.expect || []) {
-      if (e.status !== undefined && e.status !== null) expectMap.status = String(e.status)
-      else if (e.path) expectMap[e.path] = e.op === 'not_null' ? '__NOT_NULL__' : String(e.value)
+    for (const [k, v] of Object.entries(a.expect || {})) {
+      if (k === 'status') expectMap.status = String(v)
+      else expectMap[k] = v === 'not_null' ? '__NOT_NULL__' : String(v)
     }
     return {
       _key: ++keySeq, _type: 'api',

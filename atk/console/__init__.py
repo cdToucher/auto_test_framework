@@ -2,7 +2,7 @@
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 _STATIC = Path(__file__).parent / "static"
 
@@ -17,7 +17,14 @@ def create_app(project_root: Path | None = None, global_mode: bool = False) -> F
     routes.setup(app)
 
     if _STATIC.joinpath("index.html").is_file():
-        app.mount("/", StaticFiles(directory=_STATIC, html=True), name="ui")
+
+        @app.get("/{spa_path:path}", include_in_schema=False)
+        def spa(spa_path: str):
+            # 静态资源按名命中，其余一律回 index.html（前端路由接管）
+            candidate = (_STATIC / spa_path).resolve()
+            if spa_path and candidate.is_file() and candidate.is_relative_to(_STATIC.resolve()):
+                return FileResponse(candidate)
+            return FileResponse(_STATIC / "index.html")
 
     return app
 
