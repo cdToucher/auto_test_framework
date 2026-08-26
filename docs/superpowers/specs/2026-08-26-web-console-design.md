@@ -49,6 +49,7 @@ atk console -g --port 8900     # 全局模式：聚合 ~/.atk/registry.db 中全
 | 执行 | POST `/api/run` {env,module} → GET `/api/jobs/{id}/stream` (SSE) | 子进程跑 `atk run`，stdout 行转 SSE；全局同时仅 1 个任务，占用时 409 |
 | 历史 | GET `/api/runs` `/api/runs/{id}` `/api/runs/{id}/evidence/{file}` | 复用 run_store；截图等证据可内联预览 |
 | 配置 | GET/PUT `/api/environments` `/api/modules` | `${env:X}` 引用只显示占位符，不回显真实值 |
+| 定时 | GET/POST `/api/schedules`，PUT/DELETE `/api/schedules/{id}`，POST `/api/schedules/{id}/trigger` | 调度 CRUD；trigger=立即手动跑一次；响应含 next_run 预览 |
 | 全局 | GET `/api/projects`，POST/DELETE `/api/projects/{id}` | 注册表管理 + 各项目 runs 聚合查询 |
 
 并发保护：PUT 带 mtime 乐观锁，文件被外部修改返回 409（前端提示刷新或强制覆盖）。
@@ -70,11 +71,15 @@ atk console -g --port 8900     # 全局模式：聚合 ~/.atk/registry.db 中全
 3. **运行页**：选环境/module 触发；SSE 实时滚日志；结束后渲染结果摘要 + 各 intent 状态 + 截图证据内嵌
 4. **历史页**：运行记录列表 → 详情（场景级 pass/fail/blocked、报告 HTML 跳转、证据查看）
 5. **设置页**：environments/modules 表格化查看与编辑
-6. **全局模式首页**：项目卡片列表（场景数/最近运行状态）→ 点击新开对应项目视图；聚合最近运行时间线
+6. **定时任务页**：任务列表（名称/env/module 过滤/cron 或"每天 HH:MM"简化选择/enabled/上次结果/下次触发时间）；CRUD + 启停 + "立即运行"按钮
+7. **全局模式首页**：项目卡片列表（场景数/最近运行状态）→ 点击新开对应项目视图；聚合最近运行时间线
 
-## §5 执行流与错误处理
+## §5 执行流、定时与错误处理
 
 - 运行 = subprocess `atk run ...`，超时上限默认 600s 可配，kill 后标记 timeout
+- **定时调度**：APScheduler 内嵌于控制台进程；任务定义存项目内 `config/schedules.yaml`（git/AI 可读写），字段：name/env/module/cron(或简化 daily HH:MM)/enabled
+  - 触发即走同一执行管线（子进程 + 落 reports/runs + 历史可查）
+  - **已知限制**：控制台未运行则不触发（不做错过补偿，仅记录 skipped）——文档明示"定时跑批需保持 console 常驻"；后续发布里程碑可评估 launchd/crontab 托管
 - YAML 解析失败：详情页降级源码模式并标注错误行
 - SSE 断线自动重连（EventSource 原生行为），job 结束事件幂等
 - 敏感值永不出后端（响应只含占位符文本）
@@ -91,7 +96,8 @@ atk console -g --port 8900     # 全局模式：聚合 ~/.atk/registry.db 中全
 - M1 骨架+只读浏览：FastAPI 骨架、Vue 工程、树/详情/历史/证据
 - M2 触发执行+SSE 实时反馈
 - M3 API 用例表单化编辑（CRUD/断言/提取/双模式/乐观锁）
-- M4 UI 卡片编辑 + `-g` 全局聚合 + E2E 冒烟
+- M4 UI 卡片编辑 + `-g` 全局聚合
+- M5 定时任务（schedules CRUD+调度执行）+ Playwright E2E 冒烟收尾
 
 **发布里程碑（原型验证提效后另行立项，本设计不实施）**
 - pip wheel 正式发包（引擎+控制台 dist 内嵌）
@@ -102,5 +108,6 @@ atk console -g --port 8900     # 全局模式：聚合 ~/.atk/registry.db 中全
 
 - 用户体系/鉴权、多租户
 - 用例内容入库（任何形式的 DB 双写）
-- 性能测试、定时任务调度（CI 侧已有 gate/run 机制）
+- 错过触发的补偿执行（console 停机期间的任务不补跑）
+- 性能测试
 - 移动端适配
