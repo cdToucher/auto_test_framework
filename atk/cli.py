@@ -9,6 +9,10 @@ import typer
 from .diff_analyzer.git_diff import changed_files
 from .diff_analyzer.modules import classify, load_module_map
 from .executors.runner import Runner
+from .generator import llm as llm_mod
+from .generator.context import build_context, render_markdown
+from .generator.prompt import build_messages
+from .generator.writer import extract_yaml_blocks, write_drafts
 from .reporter.html_reporter import render_html, render_run_html
 from .reporter.junit import write_junit
 from .run_store import IntentRecord, add_evidence, create_run, load_run, save_run, summarize
@@ -213,6 +217,85 @@ def run(
         save_run(rec, str(runs_dir))
         typer.echo(f"已并入运行记录 {record_to}")
     raise typer.Exit(code=report.exit_code)
+
+
+@app.command()
+def gen(
+    base: str = typer.Option("HEAD~1", help="基线引用"),
+    head: str = typer.Option("HEAD", help="目标引用"),
+    repo: Path = typer.Option(".", help="被测仓库路径"),
+    module_map: Path = typer.Option("config/modules.yaml"),
+    root: Path = typer.Option("scenarios", help="场景库根目录（读取现状 + 写入草稿）"),
+    llm: bool = typer.Option(
+        False, "--llm", help="调用 LLM 自动生成并写入草稿；省略时仅输出变更上下文包"
+    ),
+    context_out: Optional[Path] = typer.Option(
+        None, "--context-out", help="把变更上下文包写入指定文件（默认打印 stdout）"
+    ),
+    max_patch: int = typer.Option(200, help="单文件补丁进入上下文的最大行数"),
+    base_url: Optional[str] = typer.Option(None, help="LLM OpenAI 兼容端点（默认 $ATK_LLM_BASE_URL）"),
+    api_key: Optional[str] = typer.Option(None, help="LLM API Key（默认 $ATK_LLM_API_KEY）"),
+    model: Optional[str] = typer.Option(None, help="LLM 模型名（默认 $ATK_LLM_MODEL）"),
+):
+    """根据 diff + 提交记录，让 AI 起草回归场景 YAML。
+
+    两种用法：
+      1. atk gen                # 输出变更上下文包，交给 AI Agent（如 ZCode）按 skill 编写
+      2. atk gen --llm          # 框架直接调 LLM 生成，校验后写入 scenarios/<module>/gen-*.yaml
+    退出码：0=成功/无变更；1=LLM 产出全部无效；2=配置或 git 错误。
+    """
+    try:
+        ctx = build_context(str(base), str(head), str(repo), module_map, root, max_patch)
+    except RuntimeError as e:
+        typer.secho(str(e), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+
+    if not ctx["files"]:
+        typer.echo(f"区间 {base}..{head} 无变更文件，无需生成场景。")
+        raise typer.Exit(code=0)
+
+    if not llm:
+        md = render_markdown(ctx)
+        if context_out:
+            context_out.write_text(md, encoding="utf-8")
+            typer.echo(f"变更上下文包已写入：{context_out}")
+        else:
+            typer.echo(md)
+        typer.echo(
+            "\n下一步（Agent 编排，参考 atk-gen skill）：\n"
+            "  1. 阅读上方上下文包，按系统规则编写场景 YAML（禁止重复现有场景）\n"
+            "  2. 写入 scenarios/<module>/gen-*.yaml，tags 加 ai-generated\n"
+            "  3. atk validate 校验 -> 人工评审 expect -> atk run --tags ai-generated"
+        )
+        raise typer.Exit(code=0)
+
+    try:
+        cfg = llm_mod.resolve_config(base_url, api_key, model)
+        reply = llm_mod.chat(cfg, build_messages(ctx))
+    except llm_mod.LlmError as e:
+        typer.secho(f"LLM 调用失败：{e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+
+    existing_scs, _ = load_scenarios(root)
+    results = write_drafts(
+        extract_yaml_blocks(reply), ctx, root, {s.scenario for s in existing_scs}
+    )
+    ok = [r for r in results if r.ok]
+    bad = [r for r in results if not r.ok]
+    for r in ok:
+        typer.secho(
+            f"✓ 已生成 [{r.module}] {r.name} -> {r.path}", fg=typer.colors.GREEN
+        )
+    for r in bad:
+        typer.secho(f"✗ 跳过无效块：{r.reason}", fg=typer.colors.YELLOW)
+    if not ok:
+        typer.secho("LLM 未产出任何可用场景。", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    typer.echo(
+        f"\n共生成 {len(ok)} 个草稿（{len(bad)} 个无效块已跳过）。"
+        f"下一步：atk validate -> 人工评审 expect -> atk run --tags ai-generated"
+    )
+    raise typer.Exit(code=0)
 
 
 @app.command()

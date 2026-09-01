@@ -12,6 +12,7 @@
 | `atk init` | 初始化项目结构（只建缺失文件，绝不覆盖） |
 | `atk validate` | 场景库合法性校验（错误+重名告警），QA 提交前自查 |
 | `atk diff` | git 变更 → 模块影响面 JSON |
+| `atk gen` | diff + 提交记录 → AI 起草场景 YAML（`--llm` 直连大模型，或输出上下文包交给 Agent） |
 | `atk plan` | 创建运行记录，输出复用场景清单与待补全意图 |
 | `atk run` | 执行场景：HTML 报告 + 可选 JUnit XML + 可并入运行记录 |
 | `atk record` | Agent 回填 UI 探索意图结论（pass/fail/suspect/blocked + 截图证据） |
@@ -81,6 +82,25 @@ atk diff → atk plan → (Agent) atk run --record-to <id> + ego-browser 实测
 完整编排规则见 `.claude/skills/atk-smoke/SKILL.md`；代码→模块映射见
 `config/modules.yaml`。CI 接入模板见 `.ci-examples/`（GitLab / GitHub Actions，
 含 MR 门禁 job 与夜间定时回归）。
+
+## AI 起草场景（diff + 提交记录 → YAML）
+
+```bash
+# 方式一：框架直连 LLM（任意 OpenAI 兼容服务），生成后自动校验写入草稿
+export ATK_LLM_API_KEY="..."                    # 可选 ATK_LLM_BASE_URL / ATK_LLM_MODEL
+atk gen --llm --base <基线>                     # 草稿写入 scenarios/<module>/gen-*.yaml
+
+# 方式二：输出变更上下文包，交给 AI Agent（如 ZCode，配合 .claude/skills/atk-gen）编写
+atk gen --base <基线> --context-out /tmp/ctx.md
+```
+
+上下文包含：提交记录（含说明正文）、分文件补丁、模块归属、受影响模块的现有场景
+（去重 + 风格对齐）。草稿自动加 `ai-generated` 标签与溯源头注释，绝不覆盖已有文件；
+expect 断言需人工评审后再参与门禁。
+
+```bash
+atk validate && atk run --tags ai-generated     # 校验并实测草稿
+```
 
 ## 场景编写
 
