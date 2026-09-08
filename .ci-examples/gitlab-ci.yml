@@ -9,24 +9,27 @@
 stages: [test, gate]
 
 .atk-setup: &atk-setup
-  - pip install -e /path/to/atk   # <<替换点：atk 框架位置>>
+  - pip install dev2atf   # <<替换点：如需本地版改 pip install -e /path/to/atk>>
 
-# ---------- MR 门禁 ----------
+# ---------- MR 门禁（一键冒烟） ----------
 smoke-mr:
   stage: test
   image: python:3.12
   <<: *atk-setup
   script:
-    # 1. 影响面+计划（基线=目标分支）
-    - PLAN=$(.venv/bin/atk plan --base origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME --head HEAD)
-    - echo "$PLAN"; RUN_ID=$(echo "$PLAN" | grep -o 'run_id: \S*' | cut -d' ' -f2)
-    # 2. 注入环境并执行复用场景（敏感值由 CI 变量注入，不进 git）
+    # 一键冒烟：plan→run→report→gate（函数复用），title 取 MR 标题
     - export ATK_BASE_URL="$ATK_STAGING_URL"   # environments.yaml 可用 ${ATK_BASE_URL} 占位
-    - atk run --env staging --record-to "$RUN_ID" --junit reports/junit.xml
-    # 3. AI 冒烟（可选）：由 agent 执行器完成 UI 意图后回填
+    - atk smoke --base origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME --head HEAD --env staging
+        --title "$CI_MERGE_REQUEST_TITLE" --junit reports/junit.xml
+    # 备选（分步）：plan→run→report→gate
+    # - PLAN=$(atk plan --base origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME --head HEAD)
+    # - echo "$PLAN"; RUN_ID=$(echo "$PLAN" | grep -o 'run_id: \S*' | cut -d' ' -f2)
+    # - export ATK_BASE_URL="$ATK_STAGING_URL"
+    # - atk run --env staging --record-to "$RUN_ID" --junit reports/junit.xml
+    # - atk report "$RUN_ID"
+    # - atk gate "$RUN_ID"                        # 门禁判定，失败即拦截 MR
+    # AI 冒烟（可选）：由 agent 执行器完成 UI 意图后回填
     #    见 .claude/skills/atk-smoke/SKILL.md
-    - atk report "$RUN_ID"
-    - atk gate "$RUN_ID"                        # 门禁判定，失败即拦截 MR
   artifacts:
     when: always
     paths: [reports/]

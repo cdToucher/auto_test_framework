@@ -1,32 +1,38 @@
 ---
 name: atk-smoke
-description: 变更驱动的自动化冒烟测试工作流。当开发者要求"跑冒烟/验证这次改动/发布前检查"，或提交涉及业务代码时使用。编排 atk 确定性命令完成影响面分析、回归复用与 UI 探索实测。
+description: 功能级AI主导冒烟测试工作流。当开发者给出功能描述或基线要求验证功能时使用。AI全程主导：atk smoke建单→缺场景调atk-gen补草稿→两处停下请开发确认→ego-browser实测回填→gate汇报。
 ---
 
-# atk 即时层冒烟工作流
+# atk 功能级冒烟工作流（AI 主导）
 
-原则：atk 负责确定性环节；你（AI）负责语义分析与 UI 实测；所有结论必须回填 atk 记录，禁止只口头汇报。
+入口：开发者只给功能描述或基线（base），AI 全程主导流程，开发只在两个介入点确认。
+
+原则：atk 负责确定性环节（建单/执行/门禁）；你（AI）负责流程推进与 UI 实测；所有结论必须回填 atk 记录，禁止只口头汇报。
 
 ## 流程
 
-1. **生成计划**：在被测仓库根目录执行
-   `atk plan --base <基线> --head HEAD`
-   一步拿到 run_id、reuse 场景清单与 unmapped 文件清单。若无 reuse 且 unmapped 有业务文件，
-   基于补丁内容提出 1-5 条最关键的测试意图。对 unmapped 文件，用
-   `git diff <基线>...HEAD -- <文件>` 阅读补丁内容自行判断可能影响的业务模块，
-   并在后续 record 的 note 中注明推断依据。
+1. **建单**：在被测仓库根目录执行
+   `atk smoke --title "<功能描述>" --base <基线> [--env <环境>]`
+   拿到 run_id 与复用场景执行结果（plan→run→report→gate 一次完成）。
 
-2. **执行复用场景**：
-   `atk run --record-to <run_id>`
-   失败场景阅读输出中的断言详情定位。
+2. **缺场景补草稿**：若 smoke 输出显示无复用覆盖或关键意图缺失，
+   按 atk-gen skill 调 `atk context` 补草稿（`scenarios/<module>/gen-*.yaml`，只增不改）。
 
-3. **UI 意图实测**（每条意图）：
+3. **介入点 1——审 expect（停下）**：向开发展示草稿路径与 expect 清单，
+   请开发评审断言业务正确性；评审通过再 `atk run` 实测草稿。未通过不得入库。
+
+4. **UI 意图实测**（每条无覆盖意图）：
    - 用 ego-browser 打开目标环境页面，按意图操作；
    - 关键状态截图保存为 PNG 文件（如 `/tmp/opencode/atks-<slug>.png`）；
    - 回填：`atk record <run_id> --title "<意图>" --status pass|fail|suspect|blocked --note "<证据与根因>" --evidence <截图路径>`
    - 状态语义：pass=断言成立；fail=复现问题（note 必须含重现步骤）；suspect=疑似问题需人定性；blocked=环境/权限原因无法执行。
 
-4. **出报告**：`atk report <run_id>`，向用户报告路径与结论摘要（重点讲 fail/suspect）。
+5. **介入点 2——整单 review（停下）**：实测全部回填后，请开发整单确认
+   `atk review <run_id> --by <确认人> --verdict approve|reject [--note ...]`（reject 必须带 note）；
+   确认 SLA 24h，超时视为发布阻塞。
+
+6. **汇报 gate**：`atk gate <run_id>`，向用户报告路径与结论摘要（重点讲 fail/suspect）。
+   gate 只读开发确认状态（告警不拦截，见 roles.md）。
 
 ## 禁止事项
 

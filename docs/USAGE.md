@@ -96,7 +96,7 @@ atk init        # 只建缺失文件，绝不覆盖：config/、scenarios/、fix
    atk validate && atk run --env staging
    ```
 
-## 4. 命令详解（共 9 个）
+## 4. 命令详解（共 11 个）
 
 | 命令 | 作用 | 常用示例 | 退出码 |
 |---|---|---|---|
@@ -105,7 +105,9 @@ atk init        # 只建缺失文件，绝不覆盖：config/、scenarios/、fix
 | `atk context` | 输出变更上下文包（提交+补丁+模块+现有场景），供 Agent 起草 | `atk context --base main --context-out /tmp/ctx.md` | 0（含无变更）/ 2 git 错误 |
 | `atk plan` | 建运行记录，输出复用清单 | `atk plan --base main --head HEAD` | 0 |
 | `atk run` | 执行场景，HTML 报告，可选 JUnit，可并入记录 | `atk run --env staging --module order --tags smoke` | 0 通过 / 1 失败 / 2 受阻·配置 |
+| `atk smoke` | 一键冒烟：plan→run→report→gate（函数复用），`--title` 整单命名 | `atk smoke --base main --env staging --title "下单链路"` | 0 放行 / 1 拦截 / 2 受阻 |
 | `atk record` | 回填 UI 意图结论+截图证据 | `atk record <run_id> --title "..." --status pass --evidence a.png` | 0 / 2 记录不存在 |
+| `atk review` | 开发整单确认（approve/reject，reject 必带 note，只告警不拦截） | `atk review <run_id> --by zhangsan --verdict approve` | 0 / 1 参数错误 / 2 记录不存在 |
 | `atk report` | 渲染运行记录为 HTML | `atk report <run_id>` | 0 / 2 |
 | `atk gate` | 合并门禁：变更一致+无失败+无未定性 | `atk gate <run_id>` | 0 放行 / 1 拦截 / 2 |
 | `atk console` | Web 控制台（需 `[console]`） | `atk console` / `atk console -g` | — |
@@ -128,6 +130,22 @@ atk gate <run_id>                       # 门禁
 ```
 
 Agent 编排版见 `.claude/skills/atk-smoke/SKILL.md`，CI 模板见 `.ci-examples/`。
+
+### 5.1b AI 主导功能测试（推荐）
+
+开发者只给功能描述或基线，AI 全程主导，开发只在两处介入确认：
+
+```bash
+atk smoke --base main --env staging --title "下单链路"   # 建单：拿 run_id，看复用结果
+# 缺场景 → AI 按 atk-gen skill 补草稿（scenarios/<module>/gen-*.yaml）
+# 介入点 1（停下）：开发审草稿 expect，通过再 atk run 实测
+# AI 用 ego-browser 实测无覆盖意图并 atk record 回填
+# 介入点 2（停下）：开发 atk review <run_id> --by xxx --verdict approve 整单确认（SLA 24h）
+atk gate <run_id>                                        # 汇报门禁
+```
+
+规则：草稿只增不改；`review` 只告警不拦截（gate 判合并只看用例/定性/漂移）；
+确认超时视为发布阻塞。详见 `docs/roles.md` 与 `.claude/skills/atk-smoke/SKILL.md`。
 
 ### 5.2 AI 补场景（context → YAML）
 
