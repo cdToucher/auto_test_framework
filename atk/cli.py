@@ -30,6 +30,133 @@ from .store.models import Priority
 app = typer.Typer(help="atk：AI 原生双层自动化测试框架（M1：API 冒烟）")
 
 
+def _parse_tags(tags: Optional[str]) -> Optional[list[str]]:
+    """逗号分隔标签串 -> 列表；空则 None。plan/run/smoke 共用。"""
+    if not tags:
+        return None
+    lst = [t.strip() for t in tags.split(",") if t.strip()]
+    return lst or None
+
+
+def _do_plan(
+    base: str,
+    head: str,
+    repo,
+    root,
+    module_map,
+    tag_list: Optional[list[str]],
+    title: str,
+    runs_dir,
+):
+    """plan 确定性逻辑：影响面 -> 复用检索 -> create_run。抛 RuntimeError(git)。"""
+    files = changed_files(base, head, str(repo))
+    groups = classify(files, load_module_map(module_map))
+    affected = sorted(m for m in groups if m != "__unmapped__")
+    scs, errors = load_scenarios(root)
+    reuse = [
+        s
+        for s in select(scs)
+        if s.module in affected and (not tag_list or set(tag_list) <= set(s.tags))
+    ]
+    try:
+        # 运行记录只保留 short/subject 轻量展示（完整提交正文/文件清单见 atk context），避免 run.yaml 膨胀
+        commits = [
+            CommitInfo(short=c.get("short", ""), subject=c.get("subject", ""))
+            for c in commit_log(base, head, str(repo))
+        ]
+    except Exception as e:
+        typer.secho(f"[警告] 获取提交记录失败，已置空：{e}", fg=typer.colors.YELLOW, err=True)
+        commits = []
+    rec = create_run(
+        base_ref=base,
+        head_ref=head,
+        affected_files=files,
+        affected_modules=affected,
+        planned_scenarios=[s.file for s in reuse],
+        title=title,
+        commits=commits,
+        runs_dir=str(runs_dir),
+    )
+    return rec, affected, groups, reuse, errors
+
+
+def _exec_report(
+    env: Optional[str],
+    module: Optional[str],
+    tag_list: Optional[list[str]],
+    priority: Optional[Priority],
+    env_file,
+    root,
+    report_dir,
+    junit,
+    on_result=None,
+):
+    """run 执行逻辑：Runner 跑场景 + HTML/JUnit 落盘。抛 KeyError(环境缺失)。"""
+    runner = Runner(env_file=env_file, scenarios_root=root)
+    report = runner.run(
+        env_name=env,
+        module=module,
+        tags=tag_list,
+        priority=priority,
+        on_result=on_result,
+    )
+    html_path = render_html(report, Path(report_dir) / "report-latest.html")
+    junit_path = write_junit(report, junit) if junit else None
+    return report, html_path, junit_path
+
+
+def _merge_report_into_run(report, record_to: str, runs_dir) -> None:
+    """把 RunReport 结果并入指定运行记录。抛 KeyError(记录不存在)。"""
+    rec = load_run(record_to, str(runs_dir))
+    rec.scenarios.extend(summarize(r) for r in report.results)
+    save_run(rec, str(runs_dir))
+
+
+def _do_report(run_id: str, runs_dir):
+    """report 渲染逻辑。抛 KeyError(记录不存在)。"""
+    rec = load_run(run_id, str(runs_dir))
+    return render_run_html(rec, Path(runs_dir) / run_id / "report.html")
+
+
+def _do_gate(run_id: str, head: str, repo, runs_dir):
+    """gate 判定逻辑。抛 KeyError(记录不存在)/RuntimeError(git)。
+
+    返回 (是否放行, verdicts, 确认状态行, 运行记录)。
+    """
+    rec = load_run(run_id, str(runs_dir))
+    verdicts: list[tuple[bool, str]] = []
+    current = changed_files(rec.base_ref, head, str(repo))
+    if sorted(current) != sorted(rec.affected_files):
+        verdicts.append((False, "变更已漂移：当前 diff 与运行记录不一致，请重新 plan"))
+    else:
+        verdicts.append((True, f"变更一致（{len(current)} 个文件）"))
+    case_fail = [s for s in rec.scenarios if not s.passed and s.error_class in ("assertion", "config")]
+    if case_fail:
+        verdicts.append((False, f"用例失败 {len(case_fail)} 个: " + ", ".join(s.name for s in case_fail)))
+    elif rec.scenarios:
+        blocked_n = len(rec.scenarios) - sum(1 for s in rec.scenarios if s.passed)
+        verdicts.append((True, f"复用场景 {len(rec.scenarios)} 个无用例失败"
+                                + (f"（受阻 {blocked_n} 个）" if blocked_n else "")))
+    bad_intents = [i for i in rec.intents if i.status in ("fail", "suspect")]
+    if bad_intents:
+        verdicts.append((False, "存在未定性结论: " + "; ".join(f"{i.title}[{i.status}]" for i in bad_intents)))
+    blocked = [i for i in rec.intents if i.status == "blocked"]
+    if blocked:
+        verdicts.append((True, f"受阻意图 {len(blocked)} 条（不拦截，但需关注）"))
+    reviews = getattr(rec, "reviews", []) or []
+    status, last = review_status(reviews)
+    if status == "rejected":
+        assert last is not None
+        review_line = f"⚠ 已被开发驳回 by {last.by}（仅告警，不拦截）" + (f"：{last.note}" if last.note else "")
+    elif status == "unconfirmed":
+        review_line = "⚠ 未经开发确认（仅告警，不拦截）"
+    else:
+        assert last is not None
+        review_line = f"✓ 已获开发确认 by {last.by}"
+    passed = all(ok for ok, _ in verdicts)
+    return passed, verdicts, review_line, rec
+
+
 @app.command()
 def validate(
     root: Path = typer.Option("scenarios"),
@@ -59,34 +186,9 @@ def plan(
     runs_dir: Path = typer.Option("reports/runs"),
 ):
     """创建即时层运行记录并输出执行计划骨架（复用场景清单 + 待补全意图）。"""
-    files = changed_files(base, head, str(repo))
-    groups = classify(files, load_module_map(module_map))
-    affected = sorted(m for m in groups if m != "__unmapped__")
-    tag_list = [t.strip() for t in tags.split(",")] if tags else None
-    scs, errors = load_scenarios(root)
-    reuse = [
-        s
-        for s in select(scs)
-        if s.module in affected and (not tag_list or set(tag_list) <= set(s.tags))
-    ]
-    try:
-        # 运行记录只保留 short/subject 轻量展示（完整提交正文/文件清单见 atk context），避免 run.yaml 膨胀
-        commits = [
-            CommitInfo(short=c.get("short", ""), subject=c.get("subject", ""))
-            for c in commit_log(base, head, str(repo))
-        ]
-    except Exception as e:
-        typer.secho(f"[警告] 获取提交记录失败，已置空：{e}", fg=typer.colors.YELLOW, err=True)
-        commits = []
-    rec = create_run(
-        base_ref=base,
-        head_ref=head,
-        affected_files=files,
-        affected_modules=affected,
-        planned_scenarios=[s.file for s in reuse],
-        title=title,
-        commits=commits,
-        runs_dir=str(runs_dir),
+    tag_list = _parse_tags(tags)
+    rec, affected, groups, reuse, errors = _do_plan(
+        base, head, repo, root, module_map, tag_list, title, runs_dir
     )
     typer.echo(f"功能：{title}" if title else "功能：（未命名）")
     typer.echo(f"run_id: {rec.run_id}")
@@ -180,8 +282,7 @@ def run(
 
     退出码：0=全部通过；1=存在用例失败或场景加载错误；2=仅环境受阻。
     """
-    tag_list = [t.strip() for t in tags.split(",")] if tags else None
-    runner = Runner(env_file=env_file, scenarios_root=root)
+    tag_list = _parse_tags(tags)
 
     def on_result(r):
         mark = "✓" if r.passed else "✗"
@@ -192,25 +293,20 @@ def run(
         )
 
     try:
-        report = runner.run(
-            env_name=env,
-            module=module,
-            tags=tag_list,
-            priority=priority,
+        report, path, jp = _exec_report(
+            env, module, tag_list, priority, env_file, root, report_dir, junit,
             on_result=on_result,
         )
     except KeyError as e:
         typer.secho(f"环境配置错误：{e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
 
-    path = render_html(report, Path(report_dir) / "report-latest.html")
     typer.echo(
         f"\n结果：通过 {report.passed_count}/{report.total}"
         f"（用例失败 {report.failed_count}，受阻 {report.blocked_count}，"
         f"加载跳过 {len(report.load_errors)}）\n报告：{path}"
     )
-    if junit:
-        jp = write_junit(report, junit)
+    if jp:
         typer.echo(f"JUnit：{jp}")
     if record_new:
         rec = create_run(runs_dir=runs_dir)
@@ -219,12 +315,10 @@ def run(
         typer.echo(f"已写入运行记录 {rec.run_id}")
     if record_to:
         try:
-            rec = load_run(record_to, str(runs_dir))
+            _merge_report_into_run(report, record_to, runs_dir)
         except KeyError as e:
             typer.secho(str(e), fg=typer.colors.RED, err=True)
             raise typer.Exit(code=2)
-        rec.scenarios.extend(summarize(r) for r in report.results)
-        save_run(rec, str(runs_dir))
         typer.echo(f"已并入运行记录 {record_to}")
     raise typer.Exit(code=report.exit_code)
 
@@ -290,11 +384,10 @@ def report(
 ):
     """渲染运行记录为 HTML 报告。"""
     try:
-        rec = load_run(run_id, str(runs_dir))
+        out = _do_report(run_id, runs_dir)
     except KeyError as e:
         typer.secho(str(e), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
-    out = render_run_html(rec, Path(runs_dir) / run_id / "report.html")
     typer.echo(f"报告：{out}")
 
 
@@ -310,49 +403,136 @@ def gate(
     退出码：0=放行；1=拦截；2=记录不存在。
     """
     try:
-        rec = load_run(run_id, str(runs_dir))
+        passed, verdicts, review_line, _rec = _do_gate(run_id, head, repo, runs_dir)
     except KeyError as e:
         typer.secho(str(e), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
-
-    verdicts: list[tuple[bool, str]] = []  # (是否放行, 说明)
-
-    current = changed_files(rec.base_ref, head, str(repo))
-    if sorted(current) != sorted(rec.affected_files):
-        verdicts.append((False, "变更已漂移：当前 diff 与运行记录不一致，请重新 plan"))
-    else:
-        verdicts.append((True, f"变更一致（{len(current)} 个文件）"))
-
-    case_fail = [s for s in rec.scenarios if not s.passed and s.error_class in ("assertion", "config")]
-    if case_fail:
-        verdicts.append((False, f"用例失败 {len(case_fail)} 个: " + ", ".join(s.name for s in case_fail)))
-    elif rec.scenarios:
-        blocked_n = len(rec.scenarios) - sum(1 for s in rec.scenarios if s.passed)
-        verdicts.append((True, f"复用场景 {len(rec.scenarios)} 个无用例失败"
-                                + (f"（受阻 {blocked_n} 个）" if blocked_n else "")))
-
-    bad_intents = [i for i in rec.intents if i.status in ("fail", "suspect")]
-    if bad_intents:
-        verdicts.append((False, "存在未定性结论: " + "; ".join(f"{i.title}[{i.status}]" for i in bad_intents)))
-    blocked = [i for i in rec.intents if i.status == "blocked"]
-    if blocked:
-        verdicts.append((True, f"受阻意图 {len(blocked)} 条（不拦截，但需关注）"))
+    except RuntimeError as e:
+        typer.secho(str(e), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
 
     for ok, msg in verdicts:
         typer.echo(("✓ " if ok else "✗ ") + msg)
     # 第四项只读检查：开发确认状态，仅告警、永不拦截（按最后一条 review 判定）
-    reviews = getattr(rec, "reviews", []) or []
-    status, last = review_status(reviews)
-    if status == "rejected":
-        assert last is not None
-        typer.echo(f"⚠ 已被开发驳回 by {last.by}（仅告警，不拦截）" + (f"：{last.note}" if last.note else ""))
-    elif status == "unconfirmed":
-        typer.echo("⚠ 未经开发确认（仅告警，不拦截）")
+    typer.echo(review_line)
+    typer.echo(f"\n门禁结论：{'放行' if passed else '拦截'}")
+    raise typer.Exit(code=0 if passed else 1)
+
+
+@app.command()
+def smoke(
+    base: str = typer.Option("HEAD~1", help="基线引用"),
+    head: str = typer.Option("HEAD", help="目标引用"),
+    repo: Path = typer.Option(".", help="被测仓库路径"),
+    env: Optional[str] = typer.Option(None, help="环境名；省略时使用各场景自身的 env 字段"),
+    title: str = typer.Option("", help="功能标题（整单）"),
+    tags: Optional[str] = typer.Option(None, help="复用/执行场景需包含的标签，逗号分隔"),
+    priority: Optional[Priority] = typer.Option(None, help="仅执行该优先级及更高（P0–P1 全跑）"),
+    junit: Optional[Path] = typer.Option(None, help="同时输出 JUnit XML 到指定路径"),
+    root: Path = typer.Option("scenarios", help="场景库根目录"),
+    module_map: Path = typer.Option("config/modules.yaml", help="模块映射表"),
+    env_file: Path = typer.Option("config/environments.yaml", help="环境配置文件"),
+    report_dir: Path = typer.Option("reports", help="run 报告输出目录"),
+    runs_dir: Path = typer.Option("reports/runs", help="运行记录目录"),
+):
+    """一键冒烟：plan→run(--record-to)→report→gate（函数复用）。
+
+    UI 实测不进命令：无覆盖意图需后续 ego-browser 实测后 atk record 回填。
+    退出码：0=放行；1=用例失败/门禁拦截；2=环境受阻或记录缺失。
+    """
+    tag_list = _parse_tags(tags)
+    # 1) plan 逻辑复用（新建 run_id）
+    try:
+        rec, affected, groups, reuse, errors = _do_plan(
+            base, head, repo, root, module_map, tag_list, title, runs_dir
+        )
+    except RuntimeError as e:
+        typer.secho(str(e), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    run_id = rec.run_id
+    typer.echo(f"功能：{title}" if title else "功能：（未命名）")
+    typer.echo(f"run_id: {run_id}")
+    typer.echo(f"affected_modules: {', '.join(affected) if affected else '（无映射命中）'}")
+    for e in errors:
+        typer.secho(f"[跳过] {e}", fg=typer.colors.YELLOW, err=True)
+    for s in reuse:
+        typer.echo(f"reuse: [{s.priority.value}] {s.scenario} ({s.file})")
+
+    # 2) run 逻辑复用（--record-to 新建 run_id）
+    def on_result(r):
+        mark = "✓" if r.passed else "✗"
+        last = r.steps[-1].detail if r.steps else r.error_class
+        suffix = "" if r.passed else f" —— {r.error_class}: {last[:120]}"
+        typer.echo(f"{mark} [{r.scenario.priority.value}] {r.scenario.scenario}{suffix}")
+
+    run_exit = 0
+    try:
+        report, latest_path, junit_path = _exec_report(
+            env, None, tag_list, priority, env_file, root, report_dir, junit,
+            on_result=on_result,
+        )
+    except KeyError as e:
+        typer.secho(f"环境配置错误：{e}", fg=typer.colors.RED, err=True)
+        run_exit = 2
+        report = None  # type: ignore[assignment]
+        latest_path = None  # type: ignore[assignment]
+        junit_path = None
     else:
-        assert last is not None
-        typer.echo(f"✓ 已获开发确认 by {last.by}")
-    typer.echo(f"\n门禁结论：{'放行' if all(ok for ok, _ in verdicts) else '拦截'}")
-    raise typer.Exit(code=0 if all(ok for ok, _ in verdicts) else 1)
+        typer.echo(
+            f"\n结果：通过 {report.passed_count}/{report.total}"
+            f"（用例失败 {report.failed_count}，受阻 {report.blocked_count}，"
+            f"加载跳过 {len(report.load_errors)}）\n报告：{latest_path}"
+        )
+        if junit_path:
+            typer.echo(f"JUnit：{junit_path}")
+        try:
+            _merge_report_into_run(report, run_id, runs_dir)
+        except KeyError as e:
+            typer.secho(str(e), fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+        typer.echo(f"已并入运行记录 {run_id}")
+        run_exit = report.exit_code
+
+    # 3) report 逻辑复用
+    try:
+        run_html = _do_report(run_id, runs_dir)
+    except KeyError as e:
+        typer.secho(str(e), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    typer.echo(f"报告：{run_html}")
+
+    # 4) gate 逻辑复用
+    try:
+        passed, verdicts, review_line, _grec = _do_gate(run_id, head, repo, runs_dir)
+    except KeyError as e:
+        typer.secho(str(e), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    except RuntimeError as e:
+        typer.secho(str(e), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    for ok, msg in verdicts:
+        typer.echo(("✓ " if ok else "✗ ") + msg)
+    typer.echo(review_line)
+    typer.echo(f"\n门禁结论：{'放行' if passed else '拦截'}")
+    gate_exit = 0 if passed else 1
+
+    # 5) 待办清单（失败场景名 + 无覆盖意图提示 + 需审草稿提示位）
+    fresh = load_run(run_id, str(runs_dir))
+    case_fail = [s for s in fresh.scenarios if not s.passed and s.error_class in ("assertion", "config")]
+    typer.echo("待办清单：")
+    if case_fail:
+        typer.echo(f"- 失败场景：{', '.join(s.name for s in case_fail)}（{len(case_fail)} 个待修复，见上断言详情）")
+    else:
+        typer.echo("- 失败场景：无")
+    if not fresh.intents:
+        typer.echo(f"- 无覆盖意图：需用 ego-browser 实测新意图并 atk record {run_id} 回填（--status pass|fail|suspect|blocked）")
+    else:
+        typer.echo(f"- 意图回填：已回填 {len(fresh.intents)} 条")
+    typer.echo("- 草稿评审：如有 scenarios/**/gen-* 草稿场景需人工评审 expect 后入库")
+    # 退出语义：run 失败仍走完 report+gate 再透出 run 码；否则透出 gate 码（拦截 1 为正常返回）
+    if run_exit != 0:
+        raise typer.Exit(code=run_exit)
+    raise typer.Exit(code=gate_exit)
 
 
 _INIT_ENV = """\
