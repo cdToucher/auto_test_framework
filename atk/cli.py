@@ -2,14 +2,15 @@
 import datetime as dt
 import json
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import typer
 
 from .diff_analyzer.git_diff import changed_files
 from .diff_analyzer.modules import classify, load_module_map
-from .executors.runner import Runner
+from .executors.runner import RunReport, Runner
 from .generator.context import build_context, commit_log, render_markdown
 from .reporter.html_reporter import render_html, render_run_html
 from .reporter.junit import write_junit
@@ -17,6 +18,7 @@ from .run_store import (
     CommitInfo,
     IntentRecord,
     ReviewRecord,
+    RunRecord,
     add_evidence,
     create_run,
     load_run,
@@ -25,7 +27,7 @@ from .run_store import (
     summarize,
 )
 from .store.loader import load_scenarios, select
-from .store.models import Priority
+from .store.models import Priority, Scenario
 
 app = typer.Typer(help="atk：AI 原生双层自动化测试框架（M1：API 冒烟）")
 
@@ -41,13 +43,13 @@ def _parse_tags(tags: Optional[str]) -> Optional[list[str]]:
 def _do_plan(
     base: str,
     head: str,
-    repo,
-    root,
-    module_map,
+    repo: Path,
+    root: Path,
+    module_map: Path,
     tag_list: Optional[list[str]],
     title: str,
-    runs_dir,
-):
+    runs_dir: Path,
+) -> tuple[RunRecord, list[str], dict[str, list[str]], list[Scenario], list[str]]:
     """plan 确定性逻辑：影响面 -> 复用检索 -> create_run。抛 RuntimeError(git)。"""
     files = changed_files(base, head, str(repo))
     groups = classify(files, load_module_map(module_map))
@@ -80,17 +82,17 @@ def _do_plan(
     return rec, affected, groups, reuse, errors
 
 
-def _exec_report(
+def _do_run(
     env: Optional[str],
     module: Optional[str],
     tag_list: Optional[list[str]],
     priority: Optional[Priority],
-    env_file,
-    root,
-    report_dir,
-    junit,
-    on_result=None,
-):
+    env_file: Path,
+    root: Path,
+    report_dir: Path,
+    junit: Optional[Path],
+    on_result: Optional[Callable[[Any], None]] = None,
+) -> tuple[RunReport, Path, Optional[Path]]:
     """run 执行逻辑：Runner 跑场景 + HTML/JUnit 落盘。抛 KeyError(环境缺失)。"""
     runner = Runner(env_file=env_file, scenarios_root=root)
     report = runner.run(
@@ -105,20 +107,22 @@ def _exec_report(
     return report, html_path, junit_path
 
 
-def _merge_report_into_run(report, record_to: str, runs_dir) -> None:
+def _merge_report_into_run(report: RunReport, record_to: str, runs_dir: Path) -> None:
     """把 RunReport 结果并入指定运行记录。抛 KeyError(记录不存在)。"""
     rec = load_run(record_to, str(runs_dir))
     rec.scenarios.extend(summarize(r) for r in report.results)
     save_run(rec, str(runs_dir))
 
 
-def _do_report(run_id: str, runs_dir):
+def _do_report(run_id: str, runs_dir: Path) -> Path:
     """report 渲染逻辑。抛 KeyError(记录不存在)。"""
     rec = load_run(run_id, str(runs_dir))
     return render_run_html(rec, Path(runs_dir) / run_id / "report.html")
 
 
-def _do_gate(run_id: str, head: str, repo, runs_dir):
+def _do_gate(
+    run_id: str, head: str, repo: Path, runs_dir: Path
+) -> tuple[bool, list[tuple[bool, str]], str, RunRecord]:
     """gate 判定逻辑。抛 KeyError(记录不存在)/RuntimeError(git)。
 
     返回 (是否放行, verdicts, 确认状态行, 运行记录)。
@@ -293,7 +297,7 @@ def run(
         )
 
     try:
-        report, path, jp = _exec_report(
+        report, path, jp = _do_run(
             env, module, tag_list, priority, env_file, root, report_dir, junit,
             on_result=on_result,
         )
@@ -458,28 +462,32 @@ def smoke(
     for s in reuse:
         typer.echo(f"reuse: [{s.priority.value}] {s.scenario} ({s.file})")
 
-    # 2) run 逻辑复用（--record-to 新建 run_id）
-    def on_result(r):
+    # 2) run 逻辑复用：按 affected_modules 逐模块执行并逐个并入记录
+    #    affected 为空时全量执行（module=None），与 plan 复用清单脱节问题修复
+    def on_result(r: Any) -> None:
         mark = "✓" if r.passed else "✗"
         last = r.steps[-1].detail if r.steps else r.error_class
         suffix = "" if r.passed else f" —— {r.error_class}: {last[:120]}"
         typer.echo(f"{mark} [{r.scenario.priority.value}] {r.scenario.scenario}{suffix}")
 
+    full_run = not affected
+    modules_to_run: list[Optional[str]] = list(affected) if affected else [None]
     run_exit = 0
-    try:
-        report, latest_path, junit_path = _exec_report(
-            env, None, tag_list, priority, env_file, root, report_dir, junit,
-            on_result=on_result,
-        )
-    except KeyError as e:
-        typer.secho(f"环境配置错误：{e}", fg=typer.colors.RED, err=True)
-        run_exit = 2
-        report = None  # type: ignore[assignment]
-        latest_path = None  # type: ignore[assignment]
-        junit_path = None
-    else:
+    run_error: Optional[Exception] = None
+    for mod in modules_to_run:
+        label = mod if mod else "全量"
+        try:
+            report, latest_path, junit_path = _do_run(
+                env, mod, tag_list, priority, env_file, root, report_dir, junit,
+                on_result=on_result,
+            )
+        except KeyError as e:
+            typer.secho(f"环境配置错误：{e}", fg=typer.colors.RED, err=True)
+            run_exit = 2
+            run_error = e
+            break
         typer.echo(
-            f"\n结果：通过 {report.passed_count}/{report.total}"
+            f"\n结果[{label}]：通过 {report.passed_count}/{report.total}"
             f"（用例失败 {report.failed_count}，受阻 {report.blocked_count}，"
             f"加载跳过 {len(report.load_errors)}）\n报告：{latest_path}"
         )
@@ -490,8 +498,11 @@ def smoke(
         except KeyError as e:
             typer.secho(str(e), fg=typer.colors.RED, err=True)
             raise typer.Exit(code=2)
-        typer.echo(f"已并入运行记录 {run_id}")
-        run_exit = report.exit_code
+        typer.echo(f"已并入运行记录 {run_id}（模块 {label}）")
+        if report.exit_code == 1:
+            run_exit = 1
+        elif report.exit_code == 2 and run_exit == 0:
+            run_exit = 2
 
     # 3) report 逻辑复用
     try:
@@ -501,23 +512,35 @@ def smoke(
         raise typer.Exit(code=2)
     typer.echo(f"报告：{run_html}")
 
-    # 4) gate 逻辑复用
+    # 4) gate 逻辑复用：run 异常（exit=2）时跳过，避免“放行”误读
+    gate_exit = 0
+    gate_skipped = run_error is not None
+    if gate_skipped:
+        typer.echo("门禁已跳过（执行异常，exit=2，结果不可信）")
+        gate_exit = 2
+    else:
+        try:
+            passed, verdicts, review_line, _grec = _do_gate(run_id, head, repo, runs_dir)
+        except KeyError as e:
+            typer.secho(str(e), fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+        except RuntimeError as e:
+            typer.secho(str(e), fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+        for ok, msg in verdicts:
+            typer.echo(("✓ " if ok else "✗ ") + msg)
+        typer.echo(review_line)
+        typer.echo(f"\n门禁结论：{'放行' if passed else '拦截'}")
+        gate_exit = 0 if passed else 1
+        if run_exit == 2:
+            typer.echo("⚠ 执行受阻（exit=2），门禁结论仅供参考，请先排查环境/受阻场景")
+
+    # 5) 待办清单（失败场景名 + 无覆盖意图提示 + 需审草稿提示位）
     try:
-        passed, verdicts, review_line, _grec = _do_gate(run_id, head, repo, runs_dir)
+        fresh = load_run(run_id, str(runs_dir))
     except KeyError as e:
         typer.secho(str(e), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
-    except RuntimeError as e:
-        typer.secho(str(e), fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=2)
-    for ok, msg in verdicts:
-        typer.echo(("✓ " if ok else "✗ ") + msg)
-    typer.echo(review_line)
-    typer.echo(f"\n门禁结论：{'放行' if passed else '拦截'}")
-    gate_exit = 0 if passed else 1
-
-    # 5) 待办清单（失败场景名 + 无覆盖意图提示 + 需审草稿提示位）
-    fresh = load_run(run_id, str(runs_dir))
     case_fail = [s for s in fresh.scenarios if not s.passed and s.error_class in ("assertion", "config")]
     typer.echo("待办清单：")
     if case_fail:
@@ -529,6 +552,8 @@ def smoke(
     else:
         typer.echo(f"- 意图回填：已回填 {len(fresh.intents)} 条")
     typer.echo("- 草稿评审：如有 scenarios/**/gen-* 草稿场景需人工评审 expect 后入库")
+    if full_run:
+        typer.echo("- 无模块命中，已全量执行（affected_modules 为空）")
     # 退出语义：run 失败仍走完 report+gate 再透出 run 码；否则透出 gate 码（拦截 1 为正常返回）
     if run_exit != 0:
         raise typer.Exit(code=run_exit)
