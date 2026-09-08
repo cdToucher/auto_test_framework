@@ -3,6 +3,7 @@ import html as _html
 from pathlib import Path
 
 from ..executors.runner import RunReport
+from ..run_store import review_status
 
 _CSS = """
 body{font-family:-apple-system,'PingFang SC',sans-serif;margin:24px;color:#1a1a1a}
@@ -120,21 +121,20 @@ def render_run_html(rec, out_path: Path | str) -> Path:
         f"<li><code>{_html.escape(c.short)}</code> {_html.escape(c.subject)}</li>"
         for c in commits
     ) or "<li>（无提交记录）</li>"
-    rejects = [r for r in reviews if r.verdict == "reject"]
-    approves = [r for r in reviews if r.verdict == "approve"]
-    if rejects:
-        last = rejects[-1]
-        review_status = (
-            f"被reject by {_html.escape(last.by)}"
+    status, last = review_status(reviews)
+    if status == "rejected":
+        assert last is not None
+        review_status_text = (
+            f"已被开发驳回 by {_html.escape(last.by)}"
             + (f" — {_html.escape(last.note)}" if last.note else "")
         )
         review_cls = "bad"
-    elif approves:
-        last = approves[-1]
-        review_status = f"已确认（approve） by {_html.escape(last.by)}"
+    elif status == "approved":
+        assert last is not None
+        review_status_text = f"已获开发确认 by {_html.escape(last.by)}"
         review_cls = "ok"
     else:
-        review_status = "未确认"
+        review_status_text = "未经开发确认"
         review_cls = "warn"
     title_h2 = f"<h2>功能：{_html.escape(title)}</h2>" if title else ""
     doc = (
@@ -147,7 +147,7 @@ def render_run_html(rec, out_path: Path | str) -> Path:
         f"{_html.escape(', '.join(rec.affected_modules) or '无')}<br>"
         f"复用场景 {len(rec.scenarios)} 个（通过 {passed_n}），"
         f"探索意图 {len(rec.intents)} 条<br>"
-        f"确认状态：<span class='{review_cls}'>{review_status}</span></div>"
+        f"确认状态：<span class='{review_cls}'>{review_status_text}</span></div>"
         "<details open><summary>提交清单"
         f"（{len(commits)}）</summary><ul>{commit_lines}</ul></details>"
         "<details open><summary>受影响文件"

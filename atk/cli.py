@@ -20,6 +20,7 @@ from .run_store import (
     add_evidence,
     create_run,
     load_run,
+    review_status,
     save_run,
     summarize,
 )
@@ -54,7 +55,7 @@ def plan(
     root: Path = typer.Option("scenarios"),
     module_map: Path = typer.Option("config/modules.yaml"),
     tags: Optional[str] = typer.Option(None, help="复用场景需包含的标签，逗号分隔"),
-    title: str = typer.Option("", help="功能标题"),
+    title: str = typer.Option("", help="功能标题（整单）"),
     runs_dir: Path = typer.Option("reports/runs"),
 ):
     """创建即时层运行记录并输出执行计划骨架（复用场景清单 + 待补全意图）。"""
@@ -69,11 +70,13 @@ def plan(
         if s.module in affected and (not tag_list or set(tag_list) <= set(s.tags))
     ]
     try:
+        # 运行记录只保留 short/subject 轻量展示（完整提交正文/文件清单见 atk context），避免 run.yaml 膨胀
         commits = [
             CommitInfo(short=c.get("short", ""), subject=c.get("subject", ""))
             for c in commit_log(base, head, str(repo))
         ]
-    except Exception:
+    except Exception as e:
+        typer.secho(f"[警告] 获取提交记录失败，已置空：{e}", fg=typer.colors.YELLOW, err=True)
         commits = []
     rec = create_run(
         base_ref=base,
@@ -337,17 +340,17 @@ def gate(
 
     for ok, msg in verdicts:
         typer.echo(("✓ " if ok else "✗ ") + msg)
-    # 第四项只读检查：开发确认状态，仅告警、永不拦截
+    # 第四项只读检查：开发确认状态，仅告警、永不拦截（按最后一条 review 判定）
     reviews = getattr(rec, "reviews", []) or []
-    rejects = [r for r in reviews if r.verdict == "reject"]
-    approves = [r for r in reviews if r.verdict == "approve"]
-    if rejects:
-        last = rejects[-1]
+    status, last = review_status(reviews)
+    if status == "rejected":
+        assert last is not None
         typer.echo(f"⚠ 已被开发驳回 by {last.by}（仅告警，不拦截）" + (f"：{last.note}" if last.note else ""))
-    elif not approves:
+    elif status == "unconfirmed":
         typer.echo("⚠ 未经开发确认（仅告警，不拦截）")
     else:
-        typer.echo(f"✓ 已获开发确认 by {approves[-1].by}")
+        assert last is not None
+        typer.echo(f"✓ 已获开发确认 by {last.by}")
     typer.echo(f"\n门禁结论：{'放行' if all(ok for ok, _ in verdicts) else '拦截'}")
     raise typer.Exit(code=0 if all(ok for ok, _ in verdicts) else 1)
 

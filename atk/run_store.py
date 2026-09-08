@@ -64,6 +64,22 @@ class RunRecord(BaseModel):
     intents: list[IntentRecord] = Field(default_factory=list)
 
 
+def review_status(
+    reviews: list[ReviewRecord] | None,
+) -> tuple[str, ReviewRecord | None]:
+    """开发确认状态：按 reviews 最后一条判定（后一条覆盖前一条）。
+
+    返回 (状态, 最后记录)：approved=已获开发确认、rejected=已被开发驳回、
+    unconfirmed=未经开发确认（无记录时）。gate 与 report 共用，避免口径漂移。
+    """
+    if not reviews:
+        return ("unconfirmed", None)
+    last = reviews[-1]
+    if last.verdict == "reject":
+        return ("rejected", last)
+    return ("approved", last)
+
+
 def _dump(rec: RunRecord, path: Path) -> None:
     path.write_text(
         yaml.safe_dump(rec.model_dump(), allow_unicode=True, sort_keys=False),
