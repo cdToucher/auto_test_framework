@@ -36,13 +36,6 @@ def m2_repo(tmp_path):
     return tmp_path
 
 
-def test_diff_outputs_groups(m2_repo, monkeypatch):
-    monkeypatch.chdir(m2_repo)
-    r = CliRunner().invoke(app, ["diff", "--base", "HEAD~1", "--head", "HEAD"])
-    assert r.exit_code == 0, r.output
-    assert '"demo"' in r.output and "src/demo/logic.py" in r.output
-
-
 def test_plan_creates_run_record(m2_repo, mock_base_url, monkeypatch):
     monkeypatch.chdir(m2_repo)
     (m2_repo / "config" / "environments.yaml").write_text(

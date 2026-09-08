@@ -13,31 +13,10 @@ from .generator.context import build_context, render_markdown
 from .reporter.html_reporter import render_html, render_run_html
 from .reporter.junit import write_junit
 from .run_store import IntentRecord, add_evidence, create_run, load_run, save_run, summarize
-from .solidify.doctor import diagnose as _diagnose
-from .solidify.exporter import export_scenario
 from .store.loader import load_scenarios, select
 from .store.models import Priority
 
 app = typer.Typer(help="atk：AI 原生双层自动化测试框架（M1：API 冒烟）")
-
-
-@app.command("list")
-def list_cmd(
-    module: Optional[str] = typer.Option(None, help="按模块过滤"),
-    priority: Optional[Priority] = typer.Option(None, help="按优先级上限过滤"),
-    root: Path = typer.Option("scenarios", help="场景库根目录"),
-):
-    """列出场景库中的场景。"""
-    scs, errors = load_scenarios(root)
-    for e in errors:
-        typer.secho(f"[跳过] {e}", fg=typer.colors.YELLOW, err=True)
-    scs = select(scs, module=module, priority=priority)
-    if not scs:
-        typer.echo("（场景库为空）")
-        return
-    for s in scs:
-        typer.echo(f"{s.priority.value}  [{s.module}]  {s.scenario}  ({s.file})")
-    typer.echo(f"共 {len(scs)} 个场景")
 
 
 @app.command()
@@ -55,21 +34,6 @@ def validate(
     ok = len([s for s in scs if s.scenario not in dup])
     typer.echo(f"{len(errors)} 个文件错误，{len(dup)} 个重名，{ok} 个场景通过校验")
     raise typer.Exit(code=1 if errors else 0)
-
-
-@app.command()
-def diff(
-    base: str = typer.Option("HEAD~1", help="基线引用"),
-    head: str = typer.Option("HEAD", help="目标引用"),
-    repo: Path = typer.Option(".", help="被测仓库路径"),
-    module_map: Path = typer.Option("config/modules.yaml"),
-):
-    """输出变更文件及模块归属 JSON，供 AI 分析影响面。"""
-    files = changed_files(base, head, str(repo))
-    groups = classify(files, load_module_map(module_map))
-    typer.echo(
-        json.dumps({"base": base, "head": head, "groups": groups}, ensure_ascii=False, indent=2)
-    )
 
 
 @app.command()
@@ -268,47 +232,6 @@ def context(
         if output_format != "json":
             typer.echo(next_steps)
     raise typer.Exit(code=0)
-
-
-@app.command()
-def export(
-    scenario: Path = typer.Argument(..., help="场景 YAML 路径"),
-    out_dir: Path = typer.Option("generated", help="固化脚本输出目录"),
-    env: str = typer.Option("local", help="导出时用于解析 ${var} 的环境"),
-    env_file: Path = typer.Option("config/environments.yaml"),
-    base_url: Optional[str] = typer.Option(None, help="覆盖 base_url（默认取环境配置）"),
-):
-    """把场景固化为自包含 pytest 脚本（API 确定性，UI 步骤留待 Agent 填充）。"""
-    from .executors.env import load_env as _load_env
-
-    try:
-        cfg = _load_env(env_file, env)
-    except KeyError as e:
-        typer.secho(f"环境配置错误：{e}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=2)
-    path = export_scenario(
-        scenario,
-        out_dir=out_dir,
-        base_url=base_url or cfg.base_url,
-        variables=dict(cfg.vars),
-    )
-    typer.echo(f"已生成：{path}\n运行：pytest {path}")
-
-
-@app.command()
-def doctor(
-    path: Path = typer.Argument(..., help="固化脚本（或目录）路径"),
-):
-    """诊断固化脚本：healthy/pending/repairable/suspect_bug/broken。
-
-    退出码：0=healthy|pending；1=repairable|suspect_bug|broken；2=文件不存在。
-    """
-    if not Path(path).exists():
-        typer.secho(f"路径不存在: {path}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=2)
-    result = _diagnose(path)
-    typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
-    raise typer.Exit(code=0 if result["status"] in ("healthy", "pending") else 1)
 
 
 @app.command()

@@ -23,14 +23,6 @@ def _setup(tmp_path: Path, base_url: str):
     (tmp_path / "scenarios/user/login.yaml").write_text(SCENARIO, encoding="utf-8")
 
 
-def test_list_command(tmp_path, mock_base_url, monkeypatch):
-    _setup(tmp_path, mock_base_url)
-    monkeypatch.chdir(tmp_path)
-    r = CliRunner().invoke(app, ["list"])
-    assert r.exit_code == 0
-    assert "冒烟登录" in r.output and "P0" in r.output
-
-
 def test_run_command_writes_report(tmp_path, mock_base_url, monkeypatch):
     _setup(tmp_path, mock_base_url)
     monkeypatch.chdir(tmp_path)
