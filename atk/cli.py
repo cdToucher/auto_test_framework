@@ -226,37 +226,47 @@ def context(
     context_out: Optional[Path] = typer.Option(
         None, "--context-out", help="把变更上下文包写入指定文件（默认打印 stdout）"
     ),
-    max_patch: int = typer.Option(200, help="单文件补丁进入上下文的最大行数"),
-    format: str = typer.Option("markdown", help="输出格式：markdown|json"),
+    max_patch_lines: int = typer.Option(
+        200, "--max-patch", "--max-patch-lines", help="单文件补丁进入上下文的最大行数"
+    ),
+    output_format: str = typer.Option("markdown", "--format", help="输出格式：markdown|json"),
 ):
     """输出确定性变更上下文包（提交记录 + 补丁 + 模块归属），供 Agent 按 atk-gen skill 编写场景。"""
-    if format not in ("markdown", "json"):
+    if output_format not in ("markdown", "json"):
         raise typer.BadParameter("format 必须是 markdown|json")
     try:
-        ctx = build_context(str(base), str(head), str(repo), module_map, root, max_patch)
+        ctx = build_context(
+            str(base), str(head), str(repo), module_map, root,
+            max_patch_lines=max_patch_lines,
+        )
     except RuntimeError as e:
         typer.secho(str(e), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
 
     if not ctx["files"]:
-        typer.echo(f"区间 {base}..{head} 无变更文件，无需生成场景。")
+        typer.echo(f"区间 {base}...{head} 无变更文件，无需生成场景。")
         raise typer.Exit(code=0)
 
-    if format == "json":
+    if output_format == "json":
         body = json.dumps(ctx, ensure_ascii=False, indent=2)
     else:
         body = render_markdown(ctx)
-    if context_out:
-        context_out.write_text(body, encoding="utf-8")
-        typer.echo(f"变更上下文包已写入：{context_out}")
-    else:
-        typer.echo(body)
-    typer.echo(
+    next_steps = (
         "\n下一步（Agent 编排，参考 atk-gen skill）：\n"
         "  1. 阅读上方上下文包，按系统规则编写场景 YAML（禁止重复现有场景）\n"
         "  2. 写入 scenarios/<module>/gen-*.yaml，tags 加 ai-generated\n"
         "  3. atk validate 校验 -> 人工评审 expect -> atk run --tags ai-generated"
     )
+    if context_out:
+        context_out.parent.mkdir(parents=True, exist_ok=True)
+        context_out.write_text(body, encoding="utf-8")
+        typer.echo(f"变更上下文包已写入：{context_out}")
+        typer.echo(next_steps)
+    else:
+        typer.echo(body)
+        # json 直出 stdout 时省略下一步提示，保持机器可解析（见 test_context_json_format）
+        if output_format != "json":
+            typer.echo(next_steps)
     raise typer.Exit(code=0)
 
 

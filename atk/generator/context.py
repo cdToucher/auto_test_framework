@@ -9,7 +9,7 @@ from pathlib import Path
 from ..diff_analyzer.git_diff import changed_files
 from ..diff_analyzer.modules import classify, load_module_map
 from ..store.loader import load_scenarios
-from ..store.models import ApiStep, Scenario
+from ..store.models import ApiStep
 
 # 单文件补丁与总量上限，防止大 diff 撑爆提示词
 MAX_PATCH_LINES_PER_FILE = 400
@@ -26,13 +26,16 @@ def _git(*args: str, repo: str = ".") -> str:
 
 
 def commit_log(base: str, head: str, repo: str = ".") -> list[dict]:
-    """返回 base..head 区间的提交（head 有而 base 没有的提交）。
+    """返回 base...head 三点区间的提交（merge-base(base,head)..head）。
+
+    与 changed_files/file_patches 统一用三点口径：线性历史下等价于两点
+    base..head，有分叉时以 merge-base 为准，避免提交与补丁口径对不上。
 
     字段/说明/文件段分别用 \\x1f、\\x1d、\\x1e 分隔，避免与正文文本冲突；
     注意不能对分块做 strip()——Python 会把 \\x1f 当空白剥掉。
     """
     out = _git(
-        "log", f"{base}..{head}",
+        "log", f"{base}...{head}",
         "--date=short",
         # \x1e 放在格式串开头作记录分隔：--name-only 的文件列表输出在
         # pretty 正文之后，若 \x1e 收尾会把文件列表并入下一分块
@@ -164,7 +167,11 @@ def render_markdown(ctx: dict) -> str:
 
     lines.append("## 变更文件与模块归属")
     for mod, fs in ctx["groups"].items():
+        if mod == "__unmapped__":
+            continue
         lines.append(f"- 模块 `{mod}`：{', '.join(fs)}")
+    if "__unmapped__" in ctx["groups"]:
+        lines.append(f"- 未映射文件：{', '.join(ctx['groups']['__unmapped__'])}")
     lines.append("")
 
     lines.append("## 代码补丁")

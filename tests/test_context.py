@@ -93,8 +93,27 @@ def test_context_json_format(repo, tmp_path):
         "--format", "json",
     ])
     assert r.exit_code == 0, r.output
-    # 输出中第一段 JSON 需可解析（末尾的下一步提示在 JSON 之后，截取到最后一个 } 为止）
-    payload = r.output[: r.output.rfind("}") + 1]
-    data = json.loads(payload[payload.find("{"):])
+    # json 直出 stdout 时必须纯 JSON 可解析（下一步提示已省略，保证机器解析）
+    data = json.loads(r.output)
     assert data["files"] == ["src/api.py"]
     assert data["affected_modules"] == ["order"]
+    assert "下一步" not in r.stdout
+
+
+def test_context_invalid_format_exits_2(repo, tmp_path):
+    mm = _module_map(tmp_path)
+    r = runner.invoke(app, [
+        "context", "--base", "HEAD~1", "--head", "HEAD", "--repo", str(repo),
+        "--module-map", str(mm), "--root", str(tmp_path / "scenarios"),
+        "--format", "xml",
+    ])
+    assert r.exit_code == 2
+
+
+def test_context_git_failure_exits_2(repo, tmp_path):
+    mm = _module_map(tmp_path)
+    r = runner.invoke(app, [
+        "context", "--base", "NOTEXIST", "--head", "ALSONOTEXIST", "--repo", str(repo),
+        "--module-map", str(mm), "--root", str(tmp_path / "scenarios"),
+    ])
+    assert r.exit_code == 2
