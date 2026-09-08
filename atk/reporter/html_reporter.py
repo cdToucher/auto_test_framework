@@ -113,15 +113,43 @@ def render_run_html(rec, out_path: Path | str) -> Path:
             + "</li>"
         )
     passed_n = sum(1 for s in rec.scenarios if s.passed)
+    title = getattr(rec, "title", "") or ""
+    commits = getattr(rec, "commits", []) or []
+    reviews = getattr(rec, "reviews", []) or []
+    commit_lines = "".join(
+        f"<li><code>{_html.escape(c.short)}</code> {_html.escape(c.subject)}</li>"
+        for c in commits
+    ) or "<li>（无提交记录）</li>"
+    rejects = [r for r in reviews if r.verdict == "reject"]
+    approves = [r for r in reviews if r.verdict == "approve"]
+    if rejects:
+        last = rejects[-1]
+        review_status = (
+            f"被reject by {_html.escape(last.by)}"
+            + (f" — {_html.escape(last.note)}" if last.note else "")
+        )
+        review_cls = "bad"
+    elif approves:
+        last = approves[-1]
+        review_status = f"已确认（approve） by {_html.escape(last.by)}"
+        review_cls = "ok"
+    else:
+        review_status = "未确认"
+        review_cls = "warn"
+    title_h2 = f"<h2>功能：{_html.escape(title)}</h2>" if title else ""
     doc = (
         "<!doctype html><html lang=zh><head><meta charset=utf-8>"
         f"<title>atk 运行报告 {rec.run_id}</title><style>{_CSS}</style></head><body>"
         f"<h1>即时层运行报告 · {rec.run_id} · {rec.created_at}</h1>"
+        f"{title_h2}"
         f"<div class=sum>基线 {_html.escape(rec.base_ref)} → "
         f"{_html.escape(rec.head_ref)}　受影响模块："
         f"{_html.escape(', '.join(rec.affected_modules) or '无')}<br>"
         f"复用场景 {len(rec.scenarios)} 个（通过 {passed_n}），"
-        f"探索意图 {len(rec.intents)} 条</div>"
+        f"探索意图 {len(rec.intents)} 条<br>"
+        f"确认状态：<span class='{review_cls}'>{review_status}</span></div>"
+        "<details open><summary>提交清单"
+        f"（{len(commits)}）</summary><ul>{commit_lines}</ul></details>"
         "<details open><summary>受影响文件"
         f"（{len(rec.affected_files)}）</summary><pre>"
         f"{_html.escape(chr(10).join(rec.affected_files))}</pre></details>"

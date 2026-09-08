@@ -1,4 +1,5 @@
 """atk 命令行入口。"""
+import datetime as dt
 import json
 from collections import Counter
 from pathlib import Path
@@ -9,10 +10,19 @@ import typer
 from .diff_analyzer.git_diff import changed_files
 from .diff_analyzer.modules import classify, load_module_map
 from .executors.runner import Runner
-from .generator.context import build_context, render_markdown
+from .generator.context import build_context, commit_log, render_markdown
 from .reporter.html_reporter import render_html, render_run_html
 from .reporter.junit import write_junit
-from .run_store import IntentRecord, add_evidence, create_run, load_run, save_run, summarize
+from .run_store import (
+    CommitInfo,
+    IntentRecord,
+    ReviewRecord,
+    add_evidence,
+    create_run,
+    load_run,
+    save_run,
+    summarize,
+)
 from .store.loader import load_scenarios, select
 from .store.models import Priority
 
@@ -44,6 +54,7 @@ def plan(
     root: Path = typer.Option("scenarios"),
     module_map: Path = typer.Option("config/modules.yaml"),
     tags: Optional[str] = typer.Option(None, help="复用场景需包含的标签，逗号分隔"),
+    title: str = typer.Option("", help="功能标题"),
     runs_dir: Path = typer.Option("reports/runs"),
 ):
     """创建即时层运行记录并输出执行计划骨架（复用场景清单 + 待补全意图）。"""
@@ -57,14 +68,24 @@ def plan(
         for s in select(scs)
         if s.module in affected and (not tag_list or set(tag_list) <= set(s.tags))
     ]
+    try:
+        commits = [
+            CommitInfo(short=c.get("short", ""), subject=c.get("subject", ""))
+            for c in commit_log(base, head, str(repo))
+        ]
+    except Exception:
+        commits = []
     rec = create_run(
         base_ref=base,
         head_ref=head,
         affected_files=files,
         affected_modules=affected,
         planned_scenarios=[s.file for s in reuse],
+        title=title,
+        commits=commits,
         runs_dir=str(runs_dir),
     )
+    typer.echo(f"功能：{title}" if title else "功能：（未命名）")
     typer.echo(f"run_id: {rec.run_id}")
     typer.echo(f"affected_modules: {', '.join(affected) if affected else '（无映射命中）'}")
     for e in errors:
@@ -109,6 +130,31 @@ def record(
     save_run(rec, str(runs_dir))
     warn = f"（{missing} 个证据文件不存在已跳过）" if missing else ""
     typer.echo(f"已记录：{title} [{status}] 证据 {len(saved)} 项{warn}")
+
+
+@app.command()
+def review(
+    run_id: str,
+    by: str = typer.Option(..., help="确认人"),
+    verdict: str = typer.Option(..., help="approve|reject"),
+    note: str = typer.Option("", help="确认备注；reject 时必填"),
+    runs_dir: Path = typer.Option("reports/runs"),
+):
+    """开发确认运行记录（整单确认）。reject 必须带 note。"""
+    if verdict not in ("approve", "reject"):
+        raise typer.BadParameter("verdict 必须是 approve|reject")
+    if verdict == "reject" and not note.strip():
+        typer.secho("reject 必须带 --note 说明原因", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    try:
+        rec = load_run(run_id, str(runs_dir))
+    except KeyError as e:
+        typer.secho(str(e), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    rec.reviews.append(ReviewRecord(by=by, verdict=verdict, note=note, at=now))
+    save_run(rec, str(runs_dir))
+    typer.echo(f"已确认：{run_id} by {by} [{verdict}]" + (f" {note}" if note else ""))
 
 
 @app.command()
@@ -291,6 +337,17 @@ def gate(
 
     for ok, msg in verdicts:
         typer.echo(("✓ " if ok else "✗ ") + msg)
+    # 第四项只读检查：开发确认状态，仅告警、永不拦截
+    reviews = getattr(rec, "reviews", []) or []
+    rejects = [r for r in reviews if r.verdict == "reject"]
+    approves = [r for r in reviews if r.verdict == "approve"]
+    if rejects:
+        last = rejects[-1]
+        typer.echo(f"⚠ 已被开发驳回 by {last.by}（仅告警，不拦截）" + (f"：{last.note}" if last.note else ""))
+    elif not approves:
+        typer.echo("⚠ 未经开发确认（仅告警，不拦截）")
+    else:
+        typer.echo(f"✓ 已获开发确认 by {approves[-1].by}")
     typer.echo(f"\n门禁结论：{'放行' if all(ok for ok, _ in verdicts) else '拦截'}")
     raise typer.Exit(code=0 if all(ok for ok, _ in verdicts) else 1)
 

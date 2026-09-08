@@ -11,6 +11,18 @@ RUN_YAML = "run.yaml"
 EVIDENCE_DIR = "evidence"
 
 
+class CommitInfo(BaseModel):
+    short: str = ""
+    subject: str = ""
+
+
+class ReviewRecord(BaseModel):
+    by: str = ""
+    verdict: Literal["approve", "reject"] = "approve"
+    note: str = ""
+    at: str = ""
+
+
 class IntentRecord(BaseModel):
     title: str
     status: Literal["pass", "fail", "suspect", "blocked"] = "pass"
@@ -40,11 +52,14 @@ class ScenarioSummary(BaseModel):
 class RunRecord(BaseModel):
     run_id: str
     created_at: str
+    title: str = ""
     base_ref: str = ""
     head_ref: str = ""
     affected_files: list[str] = Field(default_factory=list)
     affected_modules: list[str] = Field(default_factory=list)
     planned_scenarios: list[str] = Field(default_factory=list)
+    commits: list[CommitInfo] = Field(default_factory=list)
+    reviews: list[ReviewRecord] = Field(default_factory=list)
     scenarios: list[ScenarioSummary] = Field(default_factory=list)
     intents: list[IntentRecord] = Field(default_factory=list)
 
@@ -62,17 +77,23 @@ def create_run(
     affected_files: list[str] | None = None,
     affected_modules: list[str] | None = None,
     planned_scenarios: list[str] | None = None,
+    title: str = "",
+    commits: list[CommitInfo] | None = None,
+    reviews: list[ReviewRecord] | None = None,
     runs_dir: Path | str = "reports/runs",
 ) -> RunRecord:
     now = dt.datetime.now()
     rec = RunRecord(
         run_id=f"smoke-{now.strftime('%Y%m%d-%H%M%S')}",
         created_at=now.isoformat(timespec="seconds"),
+        title=title,
         base_ref=base_ref,
         head_ref=head_ref,
         affected_files=affected_files or [],
         affected_modules=affected_modules or [],
         planned_scenarios=planned_scenarios or [],
+        commits=commits or [],
+        reviews=reviews or [],
     )
     d = Path(runs_dir) / rec.run_id
     d.mkdir(parents=True, exist_ok=True)
