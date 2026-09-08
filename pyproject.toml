@@ -1,5 +1,5 @@
 [project]
-name = "atk"
+name = "dev2atf"
 version = "0.1.0"
 description = "AI 原生双层自动化测试框架：即时层冒烟 + 沉淀层回归"
 requires-python = ">=3.11"
