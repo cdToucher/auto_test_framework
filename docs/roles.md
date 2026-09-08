@@ -15,7 +15,7 @@
 
 ## 2. 能力边界三原则
 
-1. **AI 产出一律是草稿。** 场景由 AI 起草、QA 审定；固化脚本中 UI 步骤先以 NotImplementedError 占位，Agent 填充后必须过 `atk doctor`。
+1. **AI 产出一律是草稿。** 场景由 AI 按 atk-gen skill 根据 `atk context` 上下文包起草、QA 审定。
 2. **确定性判断交给编译产物。** 合并与否由 `atk gate` 基于结构化记录判定，AI 不直接决定合并；断言是显式 `expect`，不是 AI 的自由发挥。
 3. **不确定就标"疑似"，强制人工定性。** Agent 实测结论只允许 pass / fail / suspect / blocked 四态；suspect 与 fail 进入 gate 拦截清单，禁止静默通过。
 
@@ -32,7 +32,7 @@
 ## 4. 日常节奏
 
 - **开发日**：Dev 提交 → CI 自动 plan→run→gate（MR 流水线）；Agent 按 SKILL.md 补 UI 意图实测并 record。
-- **夜间（22:00）**：定时任务跑当日变更冒烟 + P1 回归；doctor 对固化脚本分类，repairable 自动重译重验，suspect_bug 出报告交 QA。
+- **夜间（22:00）**：定时任务跑当日变更冒烟 + P1 回归；suspect 出报告交 QA（SLA 24h 定性）。
 - **每周**：P2 全量回归；QA 抽查 AI 自修复 diff；场景库去重（validate 重名告警清理）。
 
 ## 5. 失败定性 SLA
@@ -45,5 +45,4 @@
 
 - 不得跳过 record 直接口头宣称"测试通过"。
 - 不得把 blocked 改标 pass。
-- 不得手改 `generated/` 固化产物——改源头 YAML 后重新 export。
 - 不得在场景 vars 中提交真实口令（走 CI 注入）。

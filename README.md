@@ -13,14 +13,11 @@
 |---|---|
 | `atk init` | 初始化项目结构（只建缺失文件，绝不覆盖） |
 | `atk validate` | 场景库合法性校验（错误+重名告警），QA 提交前自查 |
-| `atk diff` | git 变更 → 模块影响面 JSON |
-| `atk gen` | diff + 提交记录 → AI 起草场景 YAML（`--llm` 直连大模型，或输出上下文包交给 Agent） |
+| `atk context` | 输出确定性变更上下文包（提交记录 + 补丁 + 模块归属），供 Agent 按 atk-gen skill 起草场景 |
 | `atk plan` | 创建运行记录，输出复用场景清单与待补全意图 |
 | `atk run` | 执行场景：HTML 报告 + 可选 JUnit XML + 可并入运行记录 |
 | `atk record` | Agent 回填 UI 探索意图结论（pass/fail/suspect/blocked + 截图证据） |
 | `atk report` | 渲染运行记录为统一 HTML 报告（含截图缩略） |
-| `atk export` | 场景固化为自包含 pytest 脚本（API 确定性；UI 步骤留占位由 Agent 填充） |
-| `atk doctor` | 固化脚本诊断分类：healthy/pending/repairable/suspect_bug/broken |
 | `atk gate` | 合并门禁：变更一致性 + 用例失败 + 未定性三查 |
 
 执行质量特性：环境错误自动重试（`retries` 默认 1）、非 JSON 响应保护、
@@ -28,7 +25,7 @@
 （0 通过 / 1 失败 / 2 受阻或配置问题）、`${env:VAR}` 敏感值注入
 （口令/会话凭证不入库，加载期解析）。
 
-## Web 控制台
+## Web 控制台（需安装 `.[console]` extra，否则 `atk console` 不可用）
 
 ```bash
 atk console          # 项目模式（当前目录），浏览器打开 http://127.0.0.1:8900
@@ -77,7 +74,7 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 ## 即时层工作流（变更驱动冒烟）
 
 ```
-atk diff → atk plan → (Agent) atk run --record-to <id> + ego-browser 实测
+atk context → atk plan → (Agent) atk run --record-to <id> + ego-browser 实测
         → atk record <id> → atk report <id> → atk gate <id>
 ```
 
@@ -85,15 +82,16 @@ atk diff → atk plan → (Agent) atk run --record-to <id> + ego-browser 实测
 `config/modules.yaml`。CI 接入模板见 `.ci-examples/`（GitLab / GitHub Actions，
 含 MR 门禁 job 与夜间定时回归）。
 
-## AI 起草场景（diff + 提交记录 → YAML）
+## AI 起草场景（context 上下文包 → YAML）
+
+`atk context` 只产出确定性上下文包，场景由 AI Agent 按 atk-gen skill 编写：
 
 ```bash
-# 方式一：框架直连 LLM（任意 OpenAI 兼容服务），生成后自动校验写入草稿
-export ATK_LLM_API_KEY="..."                    # 可选 ATK_LLM_BASE_URL / ATK_LLM_MODEL
-atk gen --llm --base <基线>                     # 草稿写入 scenarios/<module>/gen-*.yaml
+# 方式一：Agent 会话内触发 skill（自动调 atk context 拿包并起草）
+# 对 Agent 说：为这次改动补测试场景
 
-# 方式二：输出变更上下文包，交给 AI Agent（如 ZCode，配合 .claude/skills/atk-gen）编写
-atk gen --base <基线> --context-out /tmp/ctx.md
+# 方式二：先落盘上下文包，再交给 Agent（配合 .claude/skills/atk-gen 使用）
+atk context --base <基线> --context-out /tmp/ctx.md
 ```
 
 上下文包含：提交记录（含说明正文）、分文件补丁、模块归属、受影响模块的现有场景
@@ -107,7 +105,7 @@ atk validate && atk run --tags ai-generated     # 校验并实测草稿
 ## 场景编写
 
 参考 `scenarios/demo/`。步骤分 `api:`（结构化，立即生效）与 `ui:`
-（自然语言，即时层由 Agent 实测；沉淀层 export 后由 Agent 填充选择器）。
+（自然语言，即时层由 Agent 实测）。
 `expect` 是场景的灵魂，也是 QA 评审的核心对象。
 
 ```yaml
@@ -131,5 +129,5 @@ steps:
 |---|---|---|
 | M1 | 骨架 + API 执行器 + 场景库 + HTML 报告 | ✅ |
 | M2 | Agent 编排 UI 执行器 + 即时层全链路 | ✅ |
-| M3 | 固化流水线(export/doctor) + 门禁(gate) + CI 样例 | ✅ |
+| M3 | 门禁(gate) + CI 样例（export/doctor 已下线） | ✅ |
 | M4 | 角色规范文档（docs/roles.md） | ✅ |

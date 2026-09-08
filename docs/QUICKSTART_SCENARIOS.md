@@ -23,12 +23,12 @@
 
 1. **Dev 提交前**：
    ```bash
-   atk diff --base main --head HEAD
+   atk context --base main --head HEAD
    ```
-   看到 `groups` 中受影响模块 → 知道这次改动动了哪几个业务域。
+   看到模块归属中受影响模块 → 知道这次改动动了哪几个业务域。
 
-2. **Agent 自动起草**（在 CI 或本地 Agent CLI）：
-   - 读 diff 中被改动的 controller / service / view 文件
+2. **Agent 自动起草**（在 CI 或本地 Agent CLI，按 atk-gen skill 流程）：
+   - 读上下文包中被改动的 controller / service / view 文件补丁
    - 结合 `config/modules.yaml` 找到这些代码对应的业务模块
    - 对每个改动的接口/页面生成 1-3 条场景草稿，存到 `scenarios/<module>/<slug>.yaml`
    - 草稿必须走 `atk validate` 通过
@@ -44,7 +44,7 @@
 {从 scenarios/demo/ 选 1-2 个最相似的真实场景贴上}
 
 【本次 diff】
-{粘 git diff 或 atk diff 输出}
+{粘 git diff 或 atk context 上下文包}
 
 【要求】
 1. 每个改动的接口/页面至少 1 条场景

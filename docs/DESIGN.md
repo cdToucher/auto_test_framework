@@ -87,19 +87,17 @@ AI 实测 UI 步骤时结果比 API 更不可控：图片识别偏差、动态�
 
 ## 4. CLI 命令设计原则
 
-11 个子命令，**全部围绕"YAML 在哪儿、跑哪些、跑完怎么办"三个问题**展开：
+9 个子命令，**全部围绕"YAML 在哪儿、跑哪些、跑完怎么办"三个问题**展开：
 
 ```
 init         脚手架（新工程开箱）
 validate     静态校验（不入库之前先看看合不合法）
-list         浏览场景
-diff         看改动了什么、影响哪些模块
-plan         选场景（diff 驱动或手动）
+context      输出变更上下文包（提交记录 + 补丁 + 模块归属，供 Agent 起草场景）
+plan         选场景（context 上下文包驱动或手动）
 run          执行（落 reports/runs/）
 record       人为定性结果（pass/fail/suspect/blocked + 证据）
 report       把运行记录渲染成 HTML
-export       固化为 pytest 脚本（AI 难实时跑的 UI 场景用）
-doctor       修复分类（automatic / repairable / suspect_bug / retired）
+console      Web 控制台（YAML 的视图和编辑器，需 .[console] extra）
 gate         CI 门禁判定（基于结构化记录，不基于 AI 自由发挥）
 ```
 
