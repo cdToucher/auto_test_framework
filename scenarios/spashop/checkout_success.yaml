@@ -1,0 +1,30 @@
+scenario: SPA 商城使用有效优惠券下单后可查询
+module: spashop
+priority: P0
+tags: [smoke, api, spashop]
+env: spashop
+steps:
+  - api:
+      call: "POST /api/login"
+      body: { username: "${username}", password: "${password}" }
+      expect: { status: 200, data.token: not_null, data.user: "${username}" }
+      capture: { token: "data.token" }
+  - api:
+      call: "POST /api/checkout"
+      headers: { Authorization: "Bearer ${token}" }
+      body: { skuId: "${test_sku}", qty: 1, coupon: "SAVE10" }
+      expect:
+        status: 200
+        data.orderNo: not_null
+        data.status: 待支付
+        data.discount: 10
+        data.payable: 89
+      capture: { orderNo: "data.orderNo" }
+  - api:
+      call: "GET /api/orders?orderNo=${orderNo}"
+      headers: { Authorization: "Bearer ${token}" }
+      expect:
+        status: 200
+        data.list.0.orderNo: "${orderNo}"
+        data.list.0.status: 待支付
+        data.list.0.payable: 89

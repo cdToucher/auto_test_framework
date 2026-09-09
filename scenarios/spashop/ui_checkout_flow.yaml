@@ -1,0 +1,15 @@
+scenario: SPA 商城页面完成登录下单并查询订单
+module: spashop
+priority: P0
+tags: [e2e, ui, spashop]
+env: spashop
+steps:
+  - ui:
+      action: 打开首页，使用 qa/secret123 登录，看到页面右上角显示已登录
+      expect: 登录状态显示“登录成功”且会话标签显示“已登录：qa”
+  - ui:
+      action: 选择 ATK Starter Kit，数量 1，优惠券 SAVE10，点击提交订单
+      expect: 页面出现“下单成功 SO...”且应付金额为 89
+  - ui:
+      action: 点击查询订单
+      expect: 订单结果显示同一订单号、状态“待支付”、商品“ATK Starter Kit”、应付“¥89”

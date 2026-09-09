@@ -25,7 +25,11 @@ build-backend = "setuptools.build_meta"
 include = ["atk*"]
 
 [tool.setuptools.package-data]
-atk = ["skills/*/SKILL.md"]
+atk = [
+    "skills/*/SKILL.md",
+    "console/static/index.html",
+    "console/static/assets/*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

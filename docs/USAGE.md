@@ -103,26 +103,26 @@ atk init        # 只建缺失文件，绝不覆盖：config/、scenarios/、fix
 | `atk init` | 建骨架（含 Agent skill：`skills/` + `.claude/skills/`，只建缺失） | `atk init` | 0 |
 | `atk validate` | 场景合法性+重名告警，提交前自查 | `atk validate` | 0 通过 / 1 有错误 |
 | `atk context` | 输出变更上下文包（提交+补丁+模块+现有场景），供 Agent 起草 | `atk context --base main --context-out /tmp/ctx.md` | 0（含无变更）/ 2 git 错误 |
-| `atk plan` | 建运行记录，输出复用清单 | `atk plan --base main --head HEAD` | 0 |
+| `atk plan` | 建运行记录，输出复用清单；Agent 可用 `--format json` | `atk plan --base main --head HEAD --format json` | 0 |
 | `atk run` | 执行场景，HTML 报告，可选 JUnit，可并入记录 | `atk run --env staging --module order --tags smoke` | 0 通过 / 1 失败 / 2 受阻·配置 |
 | `atk smoke` | 一键冒烟：plan→run→report→gate（函数复用），`--title` 整单命名 | `atk smoke --base main --env staging --title "下单链路"` | 0 放行 / 1 拦截 / 2 受阻 |
-| `atk record` | 回填 UI 意图结论+截图证据 | `atk record <run_id> --title "..." --status pass --evidence a.png` | 0 / 2 记录不存在 |
+| `atk record` | 回填 UI 意图结论+截图证据；Agent 可用 `--from-json` | `atk record <run_id> --from-json result.json` | 0 / 1 fail/suspect 缺 note / 2 记录不存在 |
 | `atk review` | 开发整单确认（approve/reject，reject 必带 note，只告警不拦截） | `atk review <run_id> --by zhangsan --verdict approve` | 0 确认成功 / 1 reject 缺 --note / 2 verdict 非法·记录不存在 |
 | `atk review-draft` | 评审AI草稿（approve 去 tag 转正，reject 移走留档，未转正进 gate 拦截） | `atk review-draft scenarios/demo/gen-x-1.yaml --by qa --verdict approve` | 0 评审落盘 / 1 reject 缺 --note / 2 verdict 非法·非草稿 |
 | `atk report` | 渲染运行记录为 HTML | `atk report <run_id>` | 0 / 2 |
-| `atk gate` | 合并门禁：变更一致+无失败+无未定性+无未评审草稿 | `atk gate <run_id>` | 0 放行 / 1 拦截 / 2 |
+| `atk gate` | 合并门禁：变更一致+无失败+无未定性+无未评审草稿；支持 `--format json` | `atk gate <run_id> --format json` | 0 放行 / 1 拦截 / 2 |
 | `atk console` | Web 控制台（需 `[console]`） | `atk console` / `atk console -g` | — |
 
 `run` 常用过滤：`--module`、`--tags a,b`（交集）、`--priority P1`（P0–P1 全跑）、`--junit out.xml`、`--record-to <id>`、`--record-new`。
 
-`record` 的 `--status`：`pass`（断言成立）/ `fail`（复现问题，note 写重现步骤）/ `suspect`（疑似，需人定性，gate 拦截）/ `blocked`（环境原因，不拦截）。
+`record` 的 `--status`：`pass`（断言成立）/ `fail`（复现问题，note 写重现步骤）/ `suspect`（疑似，需人定性，gate 拦截）/ `blocked`（环境原因，不拦截）。`fail/suspect` 必须带 note；AI 回填推荐 `--from-json`。
 
 ## 5. 日常工作流
 
 ### 5.1 变更冒烟（每次 MR）
 
 ```bash
-atk plan --base main --head HEAD        # 记 run_id，看 reuse 清单
+atk plan --base main --head HEAD --format json  # 记 run_id，看 reuse 清单；Agent 推荐 JSON
 atk run --record-to <run_id>            # 跑复用场景
 # UI 意图 Agent 用 ego-browser 实测后：
 atk record <run_id> --title "<意图>" --status pass --note "<证据>" --evidence <截图.png>
@@ -138,10 +138,10 @@ Agent 编排版见 `.claude/skills/atk-smoke/SKILL.md`，CI 模板见 `.ci-examp
 
 ```bash
 atk smoke --base main --env staging --title "下单链路"   # 建单：拿 run_id，看复用结果
-# 缺场景 → AI 按 atk-gen skill 补草稿（scenarios/<module>/gen-*.yaml）
+# 缺场景 → AI 按 atk-authoring 协议补草稿（scenarios/<module>/gen-*.yaml）
 # 介入点 1（停下）：先 atk run --tags ai-generated 实测草稿，再向开发展示 expect 清单评审，
 # 评审结论用 atk review-draft 落盘（approve 去 tag 转正），未转正不得入库
-# AI 用 ego-browser 实测无覆盖意图并 atk record 回填
+# AI 用 ego-browser 实测无覆盖意图并 atk record --from-json 回填
 # 介入点 2（停下）：开发 atk review <run_id> --by xxx --verdict approve 整单确认（SLA 24h）
 atk gate <run_id>                                        # 汇报门禁
 ```
@@ -153,7 +153,7 @@ atk gate <run_id>                                        # 汇报门禁
 
 ```bash
 atk context --base main --context-out /tmp/ctx.md   # 落盘上下文包
-# 对 Agent 说“为这次改动补测试场景”（走 atk-gen skill 起草到 scenarios/<module>/gen-*.yaml）
+# 对 Agent 说“为这次改动补测试场景”（按 atk-authoring 协议起草到 scenarios/<module>/gen-*.yaml）
 atk validate                                        # 校验草稿
 atk run --tags ai-generated                         # 先实测草稿（技术正确性）
 atk review-draft <草稿> --by qa --verdict approve   # 再评审转正（去 ai-generated tag，需人定性 expect）

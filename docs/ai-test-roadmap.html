@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>atk AI Test 框架优化路线图</title>
+<style>
+body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;max-width:1080px;margin:0 auto;padding:28px;color:#202124;line-height:1.72;background:#fff}
+h1{font-size:30px;margin:0 0 8px;border-bottom:3px solid #2457a6;padding-bottom:10px}
+h2{font-size:22px;margin-top:38px;color:#2457a6;border-left:4px solid #2457a6;padding-left:10px}
+h3{font-size:17px;margin-top:24px;color:#333}
+p{margin:10px 0}
+code{background:#eef3ff;color:#183f7a;padding:1px 6px;border-radius:4px}
+pre{background:#1f2430;color:#d8dee9;padding:14px 16px;border-radius:8px;overflow:auto;font-size:13px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0}
+th,td{border:1px solid #d9dee8;padding:9px 10px;text-align:left;vertical-align:top;font-size:14px}
+th{background:#f5f7fb}
+.lead{font-size:16px;color:#3b3f45}
+.note{background:#fff8e1;border:1px solid #f1d57a;border-radius:8px;padding:12px 14px}
+.ok{background:#edf7ed;border:1px solid #b9dfbd;border-radius:8px;padding:12px 14px}
+.bad{background:#fff0f0;border:1px solid #efb3b3;border-radius:8px;padding:12px 14px}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.card{border:1px solid #d9dee8;border-radius:8px;padding:14px;background:#fff}
+.flow{white-space:pre;overflow:auto;background:#f6f8fb;border:1px solid #d9dee8;border-radius:8px;padding:14px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;line-height:1.55}
+.tag{display:inline-block;border:1px solid #c8d3e8;background:#f3f6fc;border-radius:999px;padding:1px 8px;margin-right:6px;font-size:12px}
+.small{color:#666;font-size:13px}
+@media (max-width:760px){body{padding:18px}.grid{grid-template-columns:1fr}h1{font-size:24px}}
+</style>
+</head>
+<body>
+<h1>atk AI Test 框架优化路线图</h1>
+<p class="lead">目标不是再造一个传统测试平台，而是让研发在 <b>product dev loop</b> 中把“整次需求/整次提交”的测试责任交给 AI 主导、框架留痕、CI 守门、人做业务判断。</p>
+
+<div class="note">
+<b>关于 AI 场景生成的结论：</b>
+当前仓库没有内置生成命令，只有 <code>atk-authoring</code> skill 和 <code>atk.generator.context</code> 上下文包模块。不要新增“atk 命令内部直接调用 LLM 生成用例”的方向。你的实际使用方式是在 TUI/CLI Agent 中结合终端命令推进，LLM 调用应该留在 Agent 编排层；atk 只提供确定性上下文、校验、运行、记录、报告、门禁和机器可读协议。
+</div>
+
+<h2>1. 当前项目定位</h2>
+<table>
+<tr><th>能力</th><th>当前状态</th><th>评价</th></tr>
+<tr><td>YAML 场景库</td><td>已实现，文件是事实源</td><td>方向正确，适合 AI 读写、git review 和 CI 回放。</td></tr>
+<tr><td>API 执行</td><td>已实现</td><td>支持 env、fixture、变量 capture、断言和报告，当前最扎实。</td></tr>
+<tr><td>变更上下文</td><td><code>atk context</code> 已实现</td><td>能提供 diff、提交、模块和现有场景，但影响面分析仍偏浅。</td></tr>
+<tr><td>一键冒烟</td><td><code>atk smoke</code> 已实现</td><td>能串起 plan/run/report/gate，但 UI 和 AI 生成仍在外部 Agent 流程。</td></tr>
+<tr><td>UI 测试</td><td>YAML 可写 <code>ui:</code>，执行器未真正支持</td><td>目前是“记录外部实测结果”，不是框架内 E2E 执行。</td></tr>
+<tr><td>Web 控制台</td><td>场景浏览、编辑、运行、历史</td><td>更像 YAML 编辑器，还不是 AI test 工作台。</td></tr>
+<tr><td>CI 门禁</td><td>有样例，有 gate</td><td>适合 API/YAML 回归；对整次需求级 AI test 还缺覆盖缺口和 intent 强约束。</td></tr>
+</table>
+
+<h2>2. 推荐总架构</h2>
+<div class="flow">需求讨论
+  -> SPEC / design
+  -> AI coding
+  -> AI review
+  -> 人工 review（可选）
+  -> AI test（atk 负责确定性骨架，Agent 负责智能编排）
+  -> CI gate
+  -> QA 体系测试
+  -> 验收
+
+反馈回路：
+  test/report/gate 中的问题 -> 优化 design / 修实现 / 补场景资产</div>
+
+<p>核心分层应改成下面这样：</p>
+<table>
+<tr><th>层</th><th>负责什么</th><th>不负责什么</th></tr>
+<tr><td>atk core</td><td>上下文包、计划、运行、记录、报告、门禁、格式协议</td><td>不直接自由发挥业务判断，不强绑某个 LLM。</td></tr>
+<tr><td>TUI/CLI Agent</td><td>读上下文、生成草稿、调用浏览器、解释失败、组织人工确认</td><td>不绕过 atk 记录，不口头宣称通过。</td></tr>
+<tr><td>CI</td><td>确定性执行 gate、归档报告、阻断合并</td><td>不做开放式 LLM 推理作为放行依据。</td></tr>
+<tr><td>Dev/QA</td><td>审 expect、定性 suspect/fail、确认整单</td><td>不再手工重复点冒烟主路径。</td></tr>
+</table>
+
+<h2>3. 为什么不要内置 LLM 生成命令</h2>
+<div class="grid">
+<div class="card">
+<h3>不建议的形态</h3>
+<pre><code># 不建议新增这种命令形态：
+# atk 内部拼 prompt、调 LLM、写 YAML</code></pre>
+<p>问题：模型、密钥、上下文裁剪、工具调用、人工暂停点都会和 Agent/TUI 重复。框架会很快变成半个 Agent 平台，维护成本高，灵活性低。</p>
+</div>
+<div class="card">
+<h3>建议的形态</h3>
+<pre><code>atk context --format json --base main
+atk plan --format json --base main
+# Agent 在 TUI/CLI 中读 JSON，自己生成草稿
+atk validate
+atk run --tags ai-generated
+atk review-draft ...
+atk gate ...</code></pre>
+<p>atk 输出确定性事实，Agent 负责智能编排。这样更符合你“结合终端 command 使用”的目标。</p>
+</div>
+</div>
+
+<p class="ok"><b>保留的不是新的生成命令，而是“生成协议”。</b>也就是：上下文 JSON schema、草稿文件命名规则、expect 审查清单、失败回填 JSON schema、gate policy。这些才是框架该沉淀的能力。</p>
+
+<h2>4. 阶段路线</h2>
+<table>
+<tr><th>阶段</th><th>目标</th><th>应交付</th><th>验收标准</th></tr>
+<tr>
+<td><span class="tag">P0</span>校准现状</td>
+<td>先让框架诚实、可安装、可诊断。</td>
+<td>
+修正文档中“UI 执行器已完成”的表述；修复 console 静态资源打包；新增 <code>atk doctor</code>；清理发布包无关文件。
+</td>
+<td>新项目安装后 <code>atk init && atk doctor && atk console</code> 能明确告诉用户哪些配置缺失。</td>
+</tr>
+<tr>
+<td><span class="tag">P1</span>机器可读协议</td>
+<td>让 TUI/CLI Agent 不再解析自然语言输出。</td>
+<td>
+为 <code>plan/gate</code> 增加 <code>--format json</code>；提供 <code>record --from-json</code>；后续再评估 <code>smoke/report</code> 的 JSON 输出。
+</td>
+<td>Agent 可以用稳定 JSON 驱动流程，CI 可以稳定提取 run_id、失败清单、待办清单。</td>
+</tr>
+<tr>
+<td><span class="tag">P1</span>测试单工作流</td>
+<td>把“整次需求/整次提交”变成一等对象。</td>
+<td>
+扩展 <code>RunRecord</code>：required_intents、coverage、drafts、triage、review SLA；新增 <code>atk task</code> 或增强 <code>atk plan</code>。
+</td>
+<td>一次变更能看到复用场景、未覆盖意图、AI 草稿、人工确认、gate 结论。</td>
+</tr>
+<tr>
+<td><span class="tag">P1</span>覆盖缺口</td>
+<td>让 AI test 知道“还没测什么”。</td>
+<td>
+模块映射升级：路径规则 + 路由/API 元数据 + OpenAPI/页面清单；输出 required_intents。
+</td>
+<td>改一个接口或页面时，plan 能指出已有场景覆盖了哪些，缺哪些 intent。</td>
+</tr>
+<tr>
+<td><span class="tag">P2</span>Agent 生成适配</td>
+<td>不做内置 LLM，但给 Agent 最短路径。</td>
+<td>
+提供 <code>atk-authoring</code> 协议；增强 <code>atk context --format json</code> 字段；后续提供 expect 摘要命令、review-draft 批量模式。
+</td>
+<td>Agent 在 TUI/CLI 里能稳定生成 1-5 个草稿，并让人只审 expect。</td>
+</tr>
+<tr>
+<td><span class="tag">P2</span>UI 实测协议</td>
+<td>先把外部浏览器实测标准化。</td>
+<td>
+新增 <code>atk ui-plan</code> 输出 UI intent；Agent 用 ego-browser/Playwright 操作；<code>record --from-json</code> 回填步骤、截图、DOM 摘要。
+</td>
+<td>UI 实测不再靠口头和自由文本，报告能复现每个关键证据。</td>
+</tr>
+<tr>
+<td><span class="tag">P3</span>确定性 E2E</td>
+<td>把高价值 UI intent 固化为可回归资产。</td>
+<td>
+从自然语言 UI step 生成 Playwright 脚本或结构化动作；失败时区分选择器失效和业务断言失败。
+</td>
+<td>夜间回归能自动跑核心 UI 流程，不依赖每次 Agent 重新看页面。</td>
+</tr>
+<tr>
+<td><span class="tag">P3</span>工作台</td>
+<td>控制台从 YAML 编辑器升级为 AI test 工作台。</td>
+<td>
+测试单列表、覆盖缺口、草稿 expect 审查、intent 回填、失败定性、gate policy 配置。
+</td>
+<td>开发不用记命令串，在控制台/TUI 里能看到整次需求测试状态。</td>
+</tr>
+</table>
+
+<h2>5. 建议命令边界</h2>
+<table>
+<tr><th>命令</th><th>建议保留/增强</th><th>说明</th></tr>
+<tr><td><code>atk context</code></td><td>增强</td><td>成为 Agent 的事实输入。重点是 JSON schema 稳定、上下文足够完整。</td></tr>
+<tr><td><code>atk plan</code></td><td>增强</td><td>输出复用场景 + required_intents + coverage，不只是 affected_modules。</td></tr>
+<tr><td><code>atk smoke</code></td><td>保留</td><td>作为一键确定性入口，但要明确“不执行开放式 UI Agent”。</td></tr>
+<tr><td><code>atk run</code></td><td>保留</td><td>负责 API/YAML 确定性回放；后续可接确定性 Playwright。</td></tr>
+<tr><td><code>atk record</code></td><td>增强</td><td>支持 <code>--from-json</code>，强制 fail/suspect 带 note，按 policy 要求 evidence。</td></tr>
+<tr><td><code>atk review-draft</code></td><td>增强</td><td>支持 expect 摘要、批量评审、评审人和时间记录。</td></tr>
+<tr><td><code>atk gate</code></td><td>增强</td><td>读取 <code>gate_policy.yaml</code>，按团队强度决定 blocked/review/evidence 是否拦截。</td></tr>
+<tr><td><code>atk-authoring</code> skill</td><td>保留但重新定位</td><td>它是 Agent/TUI workflow 的说明和协议，不是 atk CLI command；不要让 atk 内部调用 LLM。</td></tr>
+</table>
+
+<h2>6. 推荐 TUI/CLI Agent 工作流</h2>
+<pre><code># 1. Agent 获取确定性事实
+atk context --base main --head HEAD --format json > /tmp/atk-context.json
+atk plan --base main --head HEAD --format json > /tmp/atk-plan.json
+
+# 2. Agent 判断是否需要补草稿
+# 生成 scenarios/&lt;module&gt;/gen-&lt;sha&gt;-N.yaml，不通过 atk 内置 LLM
+atk validate
+atk run --env staging --tags ai-generated
+
+# 3. 人审 expect，Agent 只负责整理清单和执行命令
+atk review-draft scenarios/order/gen-abc123-1.yaml --by dev --verdict approve
+
+# 4. 确定性回归
+atk smoke --base main --head HEAD --env staging
+
+# 5. UI intent 外部实测后结构化回填
+atk record "$RUN_ID" --from-json /tmp/atk-ui-result.json
+
+# 6. 整单确认与门禁
+atk review "$RUN_ID" --by dev --verdict approve
+atk gate "$RUN_ID" --format json</code></pre>
+
+<h2>7. RunRecord 应扩展的核心字段</h2>
+<pre><code>schema_version: 2
+run_id: smoke-20260909-153000
+title: 下单链路
+base_ref: main
+head_ref: HEAD
+affected_files: []
+affected_modules: []
+coverage:
+  reused_scenarios: []
+  missing_intents: []
+required_intents:
+  - id: order-create-coupon
+    source: diff
+    module: order
+    title: 优惠券下单校验
+    status: pending
+drafts:
+  - file: scenarios/order/gen-abc123-1.yaml
+    status: pending_review
+triage:
+  fail: []
+  suspect: []
+reviews: []
+gate:
+  policy: strict
+  verdict: blocked</code></pre>
+
+<h2>8. Gate Policy 建议</h2>
+<pre><code># config/gate_policy.yaml
+require_review: true
+require_evidence_for_ui: true
+fail_on_blocked: false
+fail_on_unmapped_files: true
+run_ttl_minutes: 120
+require_all_required_intents_done: true
+allow_environment_blocked_in_mr: true
+allow_environment_blocked_in_release: false</code></pre>
+
+<p>这样可以区分个人试用、MR 门禁、发布门禁三种强度。当前代码里 review reject 只告警、blocked 不拦截，对原型友好，但对团队发布偏宽。</p>
+
+<h2>9. 控制台/TUI 应该长什么样</h2>
+<table>
+<tr><th>页面/视图</th><th>核心信息</th><th>用户动作</th></tr>
+<tr><td>测试单列表</td><td>需求标题、分支、run_id、gate 状态、待办数</td><td>进入详情、重跑、归档</td></tr>
+<tr><td>测试单详情</td><td>diff 摘要、影响模块、复用场景、缺口 intent</td><td>触发 Agent 补草稿、触发 smoke</td></tr>
+<tr><td>草稿评审</td><td>草稿路径、请求、expect 摘要、实测结果</td><td>approve/reject expect</td></tr>
+<tr><td>UI 实测</td><td>intent、步骤、截图、DOM 摘要、状态</td><td>标记 pass/fail/suspect/blocked</td></tr>
+<tr><td>失败定性</td><td>失败场景、断言 diff、截图证据、根因猜测</td><td>确认 bug/误报/环境问题</td></tr>
+<tr><td>Gate</td><td>policy、阻断项、告警项、CI 链接</td><td>重新 plan、重新 run、生成报告</td></tr>
+</table>
+
+<h2>10. 最短落地顺序</h2>
+<ol>
+<li>修正文档与打包，保证别人装完能用。</li>
+<li>给 <code>plan/smoke/gate</code> 加 JSON 输出，先服务 TUI/CLI Agent。</li>
+<li>扩展 RunRecord，加入 required_intents 和 coverage。</li>
+<li>强化 <code>record</code>，支持 JSON 回填和 policy 校验。</li>
+<li>做控制台“测试单详情页”，先不做复杂 AI 功能。</li>
+<li>把 UI 实测作为外部 Agent 协议标准化。</li>
+<li>最后再考虑 Playwright 固化和自修复。</li>
+</ol>
+
+<p class="bad"><b>判断标准：</b>一个开发者完成一整个需求后，只需要告诉 TUI/CLI Agent“验证这次改动”。Agent 能通过 atk 的确定性命令完成建单、补草稿、跑回归、实测 UI、收证据、请人审 expect、输出 gate 结论。所有关键结果都落在 run record 和报告里，而不是散落在聊天记录中。</p>
+
+<p class="small">生成时间：2026-09-09。本文是优化路线说明，不改变当前代码行为。</p>
+</body>
+</html>

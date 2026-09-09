@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ATK SPA Shop Dogfood 全流程</title>
+<style>
+body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;max-width:1080px;margin:0 auto;padding:28px;color:#202124;line-height:1.72;background:#fff}
+h1{font-size:30px;margin:0 0 8px;border-bottom:3px solid #1f6f5b;padding-bottom:10px}
+h2{font-size:21px;margin-top:34px;color:#1f6f5b;border-left:4px solid #1f6f5b;padding-left:10px}
+h3{font-size:17px;margin-top:22px;color:#30343b}
+p{margin:10px 0}
+code{background:#edf7f3;color:#15513f;padding:1px 6px;border-radius:4px}
+pre{background:#1f2430;color:#d8dee9;padding:14px 16px;border-radius:8px;overflow:auto;font-size:13px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0}
+th,td{border:1px solid #d9dee8;padding:9px 10px;text-align:left;vertical-align:top;font-size:14px}
+th{background:#f5f7fb}
+.lead{font-size:16px;color:#3b3f45}
+.note{background:#fff8e1;border:1px solid #f1d57a;border-radius:8px;padding:12px 14px}
+.ok{background:#edf7ed;border:1px solid #b9dfbd;border-radius:8px;padding:12px 14px}
+.warn{background:#fff4f4;border:1px solid #edb5b5;border-radius:8px;padding:12px 14px}
+.flow{white-space:pre;overflow:auto;background:#f6f8fb;border:1px solid #d9dee8;border-radius:8px;padding:14px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;line-height:1.55}
+@media (max-width:760px){body{padding:18px}h1{font-size:24px}}
+</style>
+</head>
+<body>
+<h1>ATK SPA Shop Dogfood 全流程</h1>
+<p class="lead">本文记录一个真实可复跑的本地示例：在 <code>examples/</code> 中提供单页面商城应用，用当前 ATK 项目完成 API 自动化、AI 浏览器 E2E、记录、报告和 gate。</p>
+
+<div class="note">
+<b>关键边界：</b>当前 <code>atk run</code> 原生执行 <code>api:</code> 步骤；<code>ui:</code> 场景作为 E2E 意图存在，由 AI 在 TUI/CLI 中驱动浏览器实际执行，再通过 <code>atk record --from-json</code> 写入同一份 run 记录。
+</div>
+
+<h2>1. 示例目标</h2>
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>examples/spa_shop.py</code></td><td>本地单页面商城，被测系统。包含登录、优惠券、下单、订单查询。</td></tr>
+<tr><td><code>scenarios/spashop/checkout_success.yaml</code></td><td>API 正向链路：登录、使用 <code>SAVE10</code> 下单、按订单号查询。</td></tr>
+<tr><td><code>scenarios/spashop/coupon_reuse_rejected.yaml</code></td><td>API 负向链路：同一会话重复使用优惠券返回 409。</td></tr>
+<tr><td><code>scenarios/spashop/ui_checkout_flow.yaml</code></td><td>E2E 意图：页面登录、下单、查询订单。</td></tr>
+<tr><td><code>tests/test_spa_shop.py</code></td><td>保护示例服务的核心业务行为，避免 dogfood 目标自身漂移。</td></tr>
+</table>
+
+<h2>2. 人和 AI 怎么协作</h2>
+<div class="flow">人：
+  1. 提供需求和环境，比如“验证 SPA 商城下单与优惠券”
+  2. 审查 AI 生成或修改的 expect 是否符合业务
+  3. 对最终 run 做 approve/reject
+
+AI：
+  1. 读取代码、场景、config，确认接口和页面事实
+  2. 编写或复用 API 场景，确保 expect 覆盖关键业务字段
+  3. 运行 atk validate 和 atk run
+  4. 用浏览器执行 E2E 意图
+  5. 用 atk record --from-json 写入结果与证据
+  6. 生成 report，执行 gate，给出结论
+
+ATK：
+  1. 保存 run 记录
+  2. 自动执行 API/YAML 场景
+  3. 生成 HTML/JUnit 报告
+  4. gate 检查变更一致性、失败、未定性事项</div>
+
+<h2>3. 复跑命令</h2>
+<h3>启动被测 SPA</h3>
+<pre><code>.venv/bin/python -m examples.spa_shop</code></pre>
+<p>服务地址：</p>
+<pre><code>http://127.0.0.1:8777/</code></pre>
+
+<h3>校验场景库</h3>
+<pre><code>.venv/bin/python -m atk validate</code></pre>
+<p>期望结果：所有 YAML 场景通过解析、字段校验和重名检查。</p>
+
+<h3>建立 run 记录</h3>
+<pre><code>.venv/bin/python -m atk plan \
+  --base HEAD \
+  --head HEAD \
+  --title spashop-local-full-flow \
+  --format json</code></pre>
+<p>本地未提交 dogfood 可使用 <code>HEAD -> HEAD</code> 建立记录；真实 PR/MR 中应传实际 <code>base/head</code>，让 ATK 按 diff 命中模块和复用场景。</p>
+
+<h3>执行 API 自动化</h3>
+<pre><code>.venv/bin/python -m atk run \
+  --env spashop \
+  --module spashop \
+  --tags api \
+  --record-to &lt;run_id&gt; \
+  --junit reports/spashop-junit.xml</code></pre>
+<p>期望结果：两个 API 场景全部通过。</p>
+
+<h3>执行 E2E 并结构化记录</h3>
+<p>AI 在 TUI/CLI 中打开浏览器，完成以下动作：</p>
+<ol>
+<li>打开 <code>http://127.0.0.1:8777/</code>。</li>
+<li>使用 <code>qa/secret123</code> 登录。</li>
+<li>选择 <code>ATK Starter Kit</code>，数量 <code>1</code>，优惠券 <code>SAVE10</code>。</li>
+<li>提交订单，并查询刚生成的订单号。</li>
+<li>断言页面显示已登录、订单状态为待支付、商品正确、应付金额为 <code>89</code>。</li>
+</ol>
+
+<p>AI 完成浏览器验证后生成结果 JSON：</p>
+<pre><code>{
+  "title": "AI E2E: SPA 商城页面登录下单查询",
+  "status": "pass",
+  "note": "浏览器完成登录、下单、查询。页面状态：已登录 qa；订单 SOxxxx；状态待支付；商品 ATK Starter Kit；应付 ¥89。",
+  "evidence_files": ["/tmp/spashop-ui.png"]
+}</code></pre>
+
+<p>然后回填到 run：</p>
+<pre><code>.venv/bin/python -m atk record &lt;run_id&gt; --from-json /tmp/spashop-ui-result.json</code></pre>
+
+<h3>开发或 AI 代表本地 dogfood 确认</h3>
+<pre><code>.venv/bin/python -m atk review &lt;run_id&gt; \
+  --by codex \
+  --verdict approve \
+  --note "dogfood: API 自动化通过，AI 浏览器 E2E 已归档"</code></pre>
+
+<h3>生成报告并门禁</h3>
+<pre><code>.venv/bin/python -m atk report &lt;run_id&gt;
+.venv/bin/python -m atk gate &lt;run_id&gt; --format json</code></pre>
+
+<h2>4. 本次验证摘要</h2>
+<div class="ok">
+<b>已跑通：</b><code>run_id=smoke-20260909-181724</code>。API 自动化 2/2 通过；浏览器 E2E 通过并归档截图；<code>atk gate</code> 返回 <code>passed: true</code>、<code>exit_code: 0</code>。
+</div>
+<p>本地报告路径：</p>
+<pre><code>reports/runs/smoke-20260909-181724/report.html</code></pre>
+<p>报告和截图属于运行产物，已由 <code>.gitignore</code> 排除，不进入代码提交。</p>
+
+<h2>5. dogfood 暴露出的框架改进</h2>
+<div class="warn">
+<b>已修复：</b>API 请求 path/header/body 原本支持变量替换，但 <code>expect.value</code> 不支持。AI 很自然会写出 <code>data.user: "${username}"</code> 这种断言，因此已补齐断言值同口径变量替换，并添加回归测试。
+</div>
+
+<h2>6. 后续建议</h2>
+<ul>
+<li>让 <code>atk plan</code> 支持 working tree diff，便于本地未提交改动也能准确命中模块。</li>
+<li>为 <code>ui:</code> 场景定义更稳定的结构化字段，例如入口 URL、选择器线索、关键断言、截图要求。</li>
+<li>后续接入内置 UI executor 时，沿用当前 <code>record --from-json</code> 的结果结构，避免破坏 TUI/CLI 协作模式。</li>
+</ul>
+</body>
+</html>

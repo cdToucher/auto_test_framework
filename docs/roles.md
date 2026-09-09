@@ -8,14 +8,14 @@
 
 | 角色 | 传统模式 | atk 模式 | 日常动作 |
 |---|---|---|---|
-| **Dev** | 写代码+凭感觉自测 | 审 expect + 整单确认 | 审草稿场景的 `expect`（介入点1）；`atk review` 整单确认（介入点2，SLA 24h） |
-| **QA** | 手工点测+追着版本跑 | 业务断言的评审者 | `atk validate` 自查场景；评审 YAML 中 `expect` 的业务正确性；对 suspect/fail 做定性（SLA 24h） |
-| **AI Agent** | 无定位 | 流程主导者 | 给定功能描述或基线即全程主导：`atk smoke` 建单→缺场景调 atk-gen 补草稿→ego-browser 实测回填→提请两处确认→汇报 gate（一切产出均为草稿） |
+| **Dev** | 写代码+凭感觉自测 | 审 expect + 整单确认 | 只做两件事：审草稿 `expect`；`atk review` 整单确认（SLA 24h） |
+| **QA** | 手工点测+追着版本跑 | 业务断言的评审者 | 审 YAML 中 `expect` 的业务正确性；对 suspect/fail 做定性（SLA 24h） |
+| **AI Agent** | 无定位 | 流程主导者 | 读代码事实→起草 API/E2E 场景→实测→`record --from-json` 回填→提请两处确认→汇报 gate（一切产出均为草稿） |
 | **CI/bot** | 只做构建 | 确定性门禁 | 执行 `gate`；拦截用例失败/未定性/变更漂移；归档 JUnit 与 HTML 报告 |
 
 ## 2. 能力边界三原则
 
-1. **AI 产出一律是草稿。** 场景由 AI 按 atk-gen skill 根据 `atk context` 上下文包起草、QA 审定。
+1. **AI 产出一律是草稿。** 场景由 AI 按 atk-authoring 协议根据 `atk context` 上下文包和代码事实起草、QA/Dev 审定。
 2. **确定性判断交给编译产物。** 合并与否由 `atk gate` 基于结构化记录判定，AI 不直接决定合并；断言是显式 `expect`，不是 AI 的自由发挥。
 3. **不确定就标"疑似"，强制人工定性。** Agent 实测结论只允许 pass / fail / suspect / blocked 四态；suspect 与 fail 进入 gate 拦截清单，禁止静默通过。
 

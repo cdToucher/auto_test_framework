@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>atk 人机协作使用说明</title>
+<style>
+body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;max-width:1080px;margin:0 auto;padding:28px;color:#202124;line-height:1.72;background:#fff}
+h1{font-size:30px;margin:0 0 8px;border-bottom:3px solid #2457a6;padding-bottom:10px}
+h2{font-size:22px;margin-top:36px;color:#2457a6;border-left:4px solid #2457a6;padding-left:10px}
+h3{font-size:17px;margin-top:22px;color:#30343b}
+p{margin:10px 0}
+code{background:#eef3ff;color:#183f7a;padding:1px 6px;border-radius:4px}
+pre{background:#1f2430;color:#d8dee9;padding:14px 16px;border-radius:8px;overflow:auto;font-size:13px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0}
+th,td{border:1px solid #d9dee8;padding:9px 10px;text-align:left;vertical-align:top;font-size:14px}
+th{background:#f5f7fb}
+ul,ol{padding-left:22px}
+li{margin:5px 0}
+.lead{font-size:16px;color:#3b3f45}
+.note{background:#fff8e1;border:1px solid #f1d57a;border-radius:8px;padding:12px 14px}
+.ok{background:#edf7ed;border:1px solid #b9dfbd;border-radius:8px;padding:12px 14px}
+.warn{background:#fff4f4;border:1px solid #edb5b5;border-radius:8px;padding:12px 14px}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.card{border:1px solid #d9dee8;border-radius:8px;padding:14px;background:#fff}
+.flow{white-space:pre;overflow:auto;background:#f6f8fb;border:1px solid #d9dee8;border-radius:8px;padding:14px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;line-height:1.55}
+.tag{display:inline-block;border:1px solid #c8d3e8;background:#f3f6fc;border-radius:999px;padding:1px 8px;margin-right:6px;font-size:12px}
+.small{color:#666;font-size:13px}
+@media (max-width:760px){body{padding:18px}.grid{grid-template-columns:1fr}h1{font-size:24px}}
+</style>
+</head>
+<body>
+<h1>atk 人机协作使用说明</h1>
+<p class="lead">本文说明当前项目应该如何被人和 AI 一起使用。核心原则是：<b>人只做业务判断，AI 负责流程推进，atk 负责确定性记录和门禁</b>。</p>
+
+<div class="note">
+<b>当前边界：</b>atk 当前已经支持 API 场景确定性执行、变更上下文、运行记录、报告和 gate。<code>ui:</code> 步骤可以写入 YAML，但 <code>atk run</code> 内部尚未真正执行 UI；UI/E2E 由 AI 使用浏览器工具实测后，通过 <code>atk record --from-json</code> 回填证据。
+实际本地 dogfood 示例见 <a href="spa-shop-dogfood.html">SPA Shop Dogfood 全流程</a>。
+</div>
+
+<h2>1. 一句话分工</h2>
+<table>
+<tr><th>角色</th><th>做什么</th><th>不做什么</th></tr>
+<tr>
+<td>开发</td>
+<td>提供需求/分支/基线；审 AI 草稿里的 <code>expect</code>；最终整单确认。</td>
+<td>不手工重复点冒烟主流程；不审长篇推理。</td>
+</tr>
+<tr>
+<td>QA</td>
+<td>维护业务断言质量；定性 <code>fail/suspect</code>；补充关键业务边界。</td>
+<td>不把日常精力放在机械点击和重复写测试代码。</td>
+</tr>
+<tr>
+<td>AI Agent</td>
+<td>读代码和 diff；按 <code>atk-authoring</code> 协议起草 API/E2E 场景；运行校验；浏览器实测；结构化回填；汇报 gate。</td>
+<td>不直接决定合并；不编造接口/字段/页面；不口头宣称通过。</td>
+</tr>
+<tr>
+<td>atk/CI</td>
+<td>输出确定性上下文；执行 YAML 场景；保存 run 记录；生成报告；执行 gate。</td>
+<td>不内置 LLM 生成命令；不替代人的业务判断。</td>
+</tr>
+</table>
+
+<h2>2. 目标工作流</h2>
+<div class="flow">需求讨论
+  -> SPEC / design
+  -> AI coding
+  -> AI review
+  -> 人工 review（可选）
+  -> AI test（当前项目）
+      - atk context/plan 拿确定性上下文
+      - AI 起草 API/E2E 场景
+      - 人审 expect
+      - atk run 执行 API/YAML 回归
+      - AI 浏览器实测 UI/E2E intent
+      - atk record 回填证据
+      - atk report/gate 输出结论
+  -> CI
+  -> QA 体系测试
+  -> 验收</div>
+
+<h2>3. 新项目接入</h2>
+<p>人只需要完成一次基础配置，后续由 AI/CI 按协议使用。</p>
+<pre><code>cd /path/to/被测项目
+atk init
+
+# 1. 配环境
+$EDITOR config/environments.yaml
+
+# 2. 配代码路径到测试模块的映射
+$EDITOR config/modules.yaml
+
+# 3. 校验
+atk validate</code></pre>
+
+<h3>人需要填写的最小配置</h3>
+<pre><code># config/environments.yaml
+staging:
+  base_url: "https://staging.example.com"
+  vars:
+    username: testuser
+    password: "${env:ATK_PASSWORD}"
+
+# config/modules.yaml
+modules:
+  order:
+    - "src/order/**"
+    - "frontend/src/pages/order/**"</code></pre>
+
+<h2>4. 开发如何使用</h2>
+<p>开发的交互应尽量短。推荐只给 AI 三类信息：要测的需求、基线分支、环境名。</p>
+<div class="card">
+<h3>开发对 AI 说</h3>
+<pre><code>验证这次改动。
+基线：main
+环境：staging
+需求：优惠券下单后金额应扣减，重复使用同一张券应失败。</code></pre>
+</div>
+
+<h3>开发的两个确认点</h3>
+<table>
+<tr><th>确认点</th><th>开发看什么</th><th>开发怎么操作</th></tr>
+<tr>
+<td>1. 审草稿 expect</td>
+<td>只看场景名、请求/页面动作摘要、expect 断言和 AI 标出的疑问。</td>
+<td><code>atk review-draft &lt;draft.yaml&gt; --by &lt;name&gt; --verdict approve|reject</code></td>
+</tr>
+<tr>
+<td>2. 整单确认</td>
+<td>看报告里的失败、疑似、受阻、截图证据和 gate 结论。</td>
+<td><code>atk review &lt;run_id&gt; --by &lt;name&gt; --verdict approve|reject</code></td>
+</tr>
+</table>
+
+<div class="ok">
+<b>给人的输出要短：</b>AI 不应让开发读完整 diff、完整日志或长篇分析。开发只判断业务断言是否正确，以及整次测试结论是否可接受。
+</div>
+
+<h2>5. AI Agent 如何使用</h2>
+<p>AI 的任务是把一次需求或提交推进成结构化测试记录。不要调用不存在的内置生成命令；用 atk 的确定性命令加自己的代码理解能力。</p>
+
+<h3>5.1 获取事实</h3>
+<pre><code>atk context --base main --head HEAD --format json > /tmp/atk-context.json
+atk plan --base main --head HEAD --format json > /tmp/atk-plan.json</code></pre>
+<p>AI 必须读取：</p>
+<ul>
+<li>变更文件和 patch。</li>
+<li>受影响模块。</li>
+<li>现有场景，避免重复。</li>
+<li>相关 controller/router/service/component/schema。</li>
+<li>需求说明或提交说明中的业务约束。</li>
+</ul>
+
+<h3>5.2 生成 API 场景</h3>
+<p>API 场景必须来自代码事实，按证据优先级生成：</p>
+<table>
+<tr><th>证据</th><th>AI 要提取什么</th></tr>
+<tr><td>路由/controller</td><td>method、path、query/path/body 参数。</td></tr>
+<tr><td>DTO/schema/OpenAPI</td><td>字段名、类型、必填、枚举、响应结构。</td></tr>
+<tr><td>service/handler</td><td>业务分支、状态机、权限、幂等、错误码。</td></tr>
+<tr><td>现有场景</td><td>登录方式、token、fixture、capture 风格。</td></tr>
+</table>
+
+<p>API 场景要求：</p>
+<ul>
+<li>每个场景一个业务意图。</li>
+<li><code>expect</code> 必须包含 <code>status</code> 和关键业务字段。</li>
+<li>不得只断 <code>status: 200</code>。</li>
+<li>不得编造不存在的接口、字段或错误码。</li>
+<li>草稿必须带 <code>ai-generated</code> tag。</li>
+</ul>
+
+<pre><code>scenario: 优惠券下单后金额扣减
+module: order
+priority: P0
+tags: [ai-generated, smoke, api]
+env: staging
+steps:
+  - api:
+      call: "POST /api/login"
+      body: { username: "${username}", password: "${password}" }
+      expect: { status: 200, data.token: not_null }
+      capture: { token: "data.token" }
+  - api:
+      call: "POST /api/orders"
+      headers: { Authorization: "Bearer ${token}" }
+      body: { skuId: "${test_sku}", qty: 1, coupon: "WELCOME10" }
+      expect: { status: 200, data.discount: 10 }
+      capture: { order_no: "data.orderNo" }</code></pre>
+
+<h3>5.3 生成 E2E/UI 场景</h3>
+<p>E2E 场景也必须来自代码或页面证据。AI 应优先寻找：</p>
+<ul>
+<li>前端路由和页面入口。</li>
+<li>表单字段、按钮、菜单、文案。</li>
+<li><code>data-testid</code>、aria label、稳定文本。</li>
+<li>页面调用的 API 和响应字段。</li>
+</ul>
+
+<p>UI 步骤写业务语义和稳定定位线索，不写坐标，不写“页面正常”。当前 <code>atk run</code> 不执行 UI，所以 UI/E2E 的确定性结果来自 AI 浏览器实测后的 <code>record</code>。</p>
+
+<pre><code>scenario: 页面下单后列表显示待支付
+module: order
+priority: P0
+tags: [ai-generated, smoke, e2e]
+env: staging
+steps:
+  - ui:
+      action: 打开订单创建页面，填写商品、数量和优惠券并提交订单
+      expect: 提交成功后跳转到订单列表或详情页
+  - ui:
+      action: 在订单列表搜索刚创建的订单
+      expect: 列表出现该订单，状态为待支付，金额已扣减优惠券</code></pre>
+
+<h3>5.4 校验草稿</h3>
+<pre><code>atk validate
+atk run --env staging --tags ai-generated</code></pre>
+<p>如果失败，AI 先判断失败类型：</p>
+<table>
+<tr><th>失败类型</th><th>处理</th></tr>
+<tr><td>配置错误</td><td>修正 env、fixture、变量、请求格式。</td></tr>
+<tr><td>环境错误</td><td>记录 blocked 或提示检查环境。</td></tr>
+<tr><td>断言失败</td><td>不要擅自改成 pass；整理证据给人判断。</td></tr>
+<tr><td>UI 未支持</td><td>用浏览器工具实测，并通过 record 回填。</td></tr>
+</table>
+
+<h2>6. AI 浏览器实测与回填</h2>
+<p>AI 使用浏览器工具完成 UI/E2E intent 后，必须把结论写回 atk 运行记录。</p>
+<pre><code>{
+  "run_id": "smoke-20260909-153000",
+  "title": "页面下单后列表显示待支付",
+  "status": "pass",
+  "note": "创建订单后在列表查到该订单，状态待支付，金额已扣减优惠券",
+  "evidence": ["/tmp/atk-order-list.png"]
+}</code></pre>
+
+<pre><code>atk record smoke-20260909-153000 --from-json /tmp/atk-ui-result.json</code></pre>
+
+<table>
+<tr><th>status</th><th>何时使用</th><th>要求</th></tr>
+<tr><td>pass</td><td>断言明确成立</td><td>最好带截图证据。</td></tr>
+<tr><td>fail</td><td>问题可复现</td><td>必须带 note，写复现步骤和证据。</td></tr>
+<tr><td>suspect</td><td>AI 不确定，疑似问题</td><td>必须带 note，等待人定性，gate 拦截。</td></tr>
+<tr><td>blocked</td><td>登录、权限、环境、服务不可用</td><td>说明阻塞原因，不得标 pass。</td></tr>
+</table>
+
+<h2>7. 完整命令流程</h2>
+<h3>AI 主导，本地/TUI 中执行</h3>
+<pre><code># 1. 建测试单并跑已有确定性场景
+atk smoke --base main --head HEAD --env staging --title "优惠券下单"
+
+# 2. 如发现缺场景，AI 按 docs/AI_AUTHORING_PROTOCOL.md 起草 YAML
+atk context --base main --head HEAD --format json > /tmp/atk-context.json
+atk plan --base main --head HEAD --format json > /tmp/atk-plan.json
+
+# 3. 校验草稿
+atk validate
+atk run --env staging --tags ai-generated
+
+# 4. 人审 expect 后转正或驳回
+atk review-draft scenarios/order/gen-abc123-1.yaml --by dev --verdict approve
+
+# 5. AI 浏览器实测 UI/E2E 后回填
+atk record &lt;run_id&gt; --from-json /tmp/atk-ui-result.json
+
+# 6. 人做整单确认
+atk review &lt;run_id&gt; --by dev --verdict approve
+
+# 7. 输出门禁结论
+atk gate &lt;run_id&gt; --format json
+atk report &lt;run_id&gt;</code></pre>
+
+<h3>CI 中执行</h3>
+<pre><code>atk smoke --base origin/main --head HEAD --env staging --title "$PR_TITLE" \
+  --junit reports/junit.xml
+
+# 或分步：
+atk plan --base origin/main --head HEAD --format json > reports/atk-plan.json
+atk run --env staging --record-to "$RUN_ID" --junit reports/junit.xml
+atk report "$RUN_ID"
+atk gate "$RUN_ID" --format json > reports/atk-gate.json</code></pre>
+
+<h2>8. 防漂移规则</h2>
+<div class="warn">
+<ul>
+<li>AI 不得编造接口、字段、状态码、页面入口、业务文案。</li>
+<li>AI 不得把环境/账号问题写成业务失败。</li>
+<li>AI 不得把 <code>blocked</code> 改成 <code>pass</code>。</li>
+<li>AI 不得修改既有场景；草稿只增不改。</li>
+<li>AI 不得跳过 <code>atk validate</code> 和草稿实测。</li>
+<li>人只审业务断言，不承担命令编排和日志归纳。</li>
+<li>CI 只信 atk 运行记录和 gate，不信聊天记录中的口头结论。</li>
+</ul>
+</div>
+
+<h2>9. 相关文件</h2>
+<table>
+<tr><th>文件</th><th>用途</th></tr>
+<tr><td><code>docs/AI_AUTHORING_PROTOCOL.md</code></td><td>给 AI/TUI 读取的场景起草协议。</td></tr>
+<tr><td><code>skills/atk-authoring/SKILL.md</code></td><td>Agent skill 形式的 API/E2E 起草规范。</td></tr>
+<tr><td><code>skills/atk-smoke/SKILL.md</code></td><td>Agent skill 形式的整次冒烟流程。</td></tr>
+<tr><td><code>docs/USAGE.md</code></td><td>命令手册。</td></tr>
+<tr><td><code>docs/roles.md</code></td><td>角色和质量门禁规范。</td></tr>
+<tr><td><code>docs/ai-test-roadmap.html</code></td><td>后续优化路线图。</td></tr>
+</table>
+
+<p class="small">生成时间：2026-09-09。本文描述当前项目可执行的人机协作方式。</p>
+</body>
+</html>

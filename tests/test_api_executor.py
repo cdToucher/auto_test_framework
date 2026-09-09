@@ -135,3 +135,31 @@ def test_call_path_variable_substitution(mock_client):
         ],
     )
     assert ex.execute(query).passed
+
+
+def test_expect_value_variable_substitution(mock_client):
+    ex = ApiExecutor(
+        mock_client,
+        {"username": "alice", "password": "secret123", "test_sku": "SKU-001"},
+    )
+    login = ApiStep(
+        call="POST /api/login",
+        body={"username": "${username}", "password": "${password}"},
+        expect=[
+            ApiExpect(status=200),
+            ApiExpect(path="data.token", op="not_null"),
+        ],
+        capture={"token": "data.token"},
+    )
+    assert ex.execute(login).passed
+
+    create = ApiStep(
+        call="POST /api/orders",
+        headers={"Authorization": "Bearer ${token}"},
+        body={"skuId": "${test_sku}", "qty": 1},
+        expect=[
+            ApiExpect(status=200),
+            ApiExpect(path="data.skuId", op="eq", value="${test_sku}"),
+        ],
+    )
+    assert ex.execute(create).passed

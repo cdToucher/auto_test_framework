@@ -11,6 +11,13 @@ demoapp:
     username: alice
     password: secret123
 
+spashop:
+  base_url: "http://127.0.0.1:8777"
+  vars:
+    username: qa
+    password: secret123
+    test_sku: "SKU-ATK-1"
+
 # 正式项目：信飞诉调系统测试环境（Cookie+token 双凭证）
 # 用法：登录后导出两样东西注入环境变量再跑：
 #   export ATK_XF_COOKIE="token=...; orgId=..."   （完整 Cookie，9 条）

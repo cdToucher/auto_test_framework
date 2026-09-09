@@ -1,3 +1,4 @@
+import json
 import re
 import subprocess
 
@@ -52,6 +53,19 @@ def test_plan_creates_run_record(m2_repo, mock_base_url, monkeypatch):
     assert rec.planned_scenarios == ["scenarios/demo/login.yaml"]
 
 
+def test_plan_json_is_agent_readable(m2_repo, monkeypatch):
+    monkeypatch.chdir(m2_repo)
+    r = CliRunner().invoke(
+        app, ["plan", "--base", "HEAD~1", "--head", "HEAD", "--format", "json"]
+    )
+    assert r.exit_code == 0, r.output
+    data = json.loads(r.output)
+    assert data["run_id"].startswith("smoke-")
+    assert data["affected_modules"] == ["demo"]
+    assert data["reuse"][0]["file"] == "scenarios/demo/login.yaml"
+    assert any(a["owner"] == "ai" for a in data["next_actions"])
+
+
 def test_record_appends_intent(m2_repo, tmp_path, monkeypatch):
     monkeypatch.chdir(m2_repo)
     shot = tmp_path / "s.png"
@@ -81,6 +95,34 @@ def test_record_appends_intent(m2_repo, tmp_path, monkeypatch):
     assert (m2_repo / "reports" / "runs" / rec.run_id / "evidence" / "s.png").exists()
 
 
+def test_record_from_json_appends_intent(m2_repo, tmp_path, monkeypatch):
+    monkeypatch.chdir(m2_repo)
+    shot = tmp_path / "ui.png"
+    shot.write_bytes(b"\x89PNG")
+    payload = tmp_path / "ui-result.json"
+    from atk.run_store import create_run, load_run
+
+    rec = create_run(runs_dir=m2_repo / "reports" / "runs")
+    payload.write_text(
+        json.dumps(
+            {
+                "run_id": rec.run_id,
+                "title": "页面添加待办并完成",
+                "status": "pass",
+                "note": "截图显示已完成",
+                "evidence": [str(shot)],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    r = CliRunner().invoke(app, ["record", rec.run_id, "--from-json", str(payload)])
+    assert r.exit_code == 0, r.output
+    got = load_run(rec.run_id, runs_dir=m2_repo / "reports" / "runs")
+    assert got.intents[0].title == "页面添加待办并完成"
+    assert got.intents[0].evidence == ["evidence/ui.png"]
+
+
 def test_record_rejects_bad_status_and_missing_run(m2_repo, monkeypatch):
     monkeypatch.chdir(m2_repo)
     from atk.run_store import create_run
@@ -90,6 +132,16 @@ def test_record_rejects_bad_status_and_missing_run(m2_repo, monkeypatch):
     assert bad.exit_code != 0
     gone = CliRunner().invoke(app, ["record", "smoke-none", "--title", "x"])
     assert gone.exit_code == 2
+
+
+def test_record_fail_and_suspect_require_note(m2_repo, monkeypatch):
+    monkeypatch.chdir(m2_repo)
+    from atk.run_store import create_run
+
+    rec = create_run(runs_dir=m2_repo / "reports" / "runs")
+    r = CliRunner().invoke(app, ["record", rec.run_id, "--title", "x", "--status", "suspect"])
+    assert r.exit_code == 1
+    assert "必须带 --note" in r.output
 
 
 def test_run_record_to_merges_summaries(m2_repo, mock_base_url, monkeypatch):

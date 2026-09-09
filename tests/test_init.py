@@ -78,3 +78,11 @@ def test_skill_copies_in_sync():
             assert copy.exists(), f"副本缺失: {copy}"
             assert copy.read_text(encoding="utf-8") == canon, copy
         assert "atk smoke" in canon or "atk context" in canon
+
+
+def test_console_static_package_data_present():
+    static = res.files("atk.console") / "static"
+    assert (static / "index.html").is_file()
+    assets = static / "assets"
+    assert assets.is_dir()
+    assert any(p.name.endswith(".js") for p in assets.iterdir())

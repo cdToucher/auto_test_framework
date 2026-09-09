@@ -13,12 +13,12 @@
 |---|---|
 | `atk init` | 初始化项目结构（只建缺失文件，绝不覆盖） |
 | `atk validate` | 场景库合法性校验（错误+重名告警），QA 提交前自查 |
-| `atk context` | 输出确定性变更上下文包（提交记录 + 补丁 + 模块归属），供 Agent 按 atk-gen skill 起草场景 |
-| `atk plan` | 创建运行记录，输出复用场景清单与待补全意图 |
+| `atk context` | 输出确定性变更上下文包（提交记录 + 补丁 + 模块归属），供 Agent 按 atk-authoring 协议起草场景 |
+| `atk plan` | 创建运行记录，输出复用场景清单与待补全意图；支持 `--format json` |
 | `atk run` | 执行场景：HTML 报告 + 可选 JUnit XML + 可并入运行记录 |
-| `atk record` | Agent 回填 UI 探索意图结论（pass/fail/suspect/blocked + 截图证据） |
+| `atk record` | Agent 回填 UI 探索意图结论（pass/fail/suspect/blocked + 截图证据），支持 `--from-json` |
 | `atk report` | 渲染运行记录为统一 HTML 报告（含截图缩略） |
-| `atk gate` | 合并门禁：变更一致性 + 用例失败 + 未定性三查 |
+| `atk gate` | 合并门禁：变更一致性 + 用例失败 + 未定性三查；支持 `--format json` |
 
 执行质量特性：环境错误自动重试（`retries` 默认 1）、非 JSON 响应保护、
 场景级 fixtures 数据（`data:` 字段）、变量捕获场景间隔离、退出码三态
@@ -50,6 +50,12 @@ APScheduler 到点自动执行并写入运行记录；控制台需常驻，停�
 配套场景库在 `scenarios/demo_app/`——覆盖正向链路、负向断言与 UI 探索，
 是框架各能力的端到端示例。
 
+`examples/spa_shop.py`（端口 8777）：单页面商城，覆盖登录、优惠券、下单、
+订单查询。配套场景库在 `scenarios/spashop/`，其中 `api` 标签场景由
+`atk run` 自动执行，`ui/e2e` 场景由 AI 浏览器实测后通过
+`atk record --from-json` 归档。完整 dogfood 流程见
+`docs/spa-shop-dogfood.html`。
+
 ## 接入真实项目示例：信飞诉调系统
 
 `scenarios/xinfei/` + `config/environments.yaml[xinfei]` 演示了对已部署
@@ -78,19 +84,20 @@ atk context → atk plan → (Agent) atk run --record-to <id> + ego-browser 实�
         → atk record <id> → atk report <id> → atk gate <id>
 ```
 
-完整编排规则见 `.claude/skills/atk-smoke/SKILL.md`；代码→模块映射见
+完整编排规则见 `.claude/skills/atk-smoke/SKILL.md`，API/E2E 场景起草协议见
+`docs/AI_AUTHORING_PROTOCOL.md` 或 `.claude/skills/atk-authoring/SKILL.md`；代码→模块映射见
 `config/modules.yaml`。CI 接入模板见 `.ci-examples/`（GitLab / GitHub Actions，
 含 MR 门禁 job 与夜间定时回归）。
 
 ## AI 起草场景（context 上下文包 → YAML）
 
-`atk context` 只产出确定性上下文包，场景由 AI Agent 按 atk-gen skill 编写：
+`atk context` 只产出确定性上下文包，场景由 AI Agent 按 atk-authoring 协议编写：
 
 ```bash
 # 方式一：Agent 会话内触发 skill（自动调 atk context 拿包并起草）
 # 对 Agent 说：为这次改动补测试场景
 
-# 方式二：先落盘上下文包，再交给 Agent（配合 .claude/skills/atk-gen 使用）
+# 方式二：先落盘上下文包，再交给 Agent（配合 .claude/skills/atk-authoring 使用）
 atk context --base <基线> --context-out /tmp/ctx.md
 ```
 

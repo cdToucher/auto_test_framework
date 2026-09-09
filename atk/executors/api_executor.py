@@ -4,7 +4,7 @@ from typing import Any
 
 import httpx
 
-from ..store.models import ApiStep
+from ..store.models import ApiExpect, ApiStep
 from .asserts import MISSING, evaluate, get_path
 from .env import substitute
 
@@ -67,9 +67,25 @@ class ApiExecutor:
                 error_class="environment",
             )
 
+        expectations = []
+        try:
+            for e in step.expect:
+                expectations.append(
+                    ApiExpect(
+                        status=e.status,
+                        path=substitute(e.path, self.variables) if e.path else e.path,
+                        op=e.op,
+                        value=substitute(e.value, self.variables),
+                    )
+                )
+        except Exception as e:
+            return StepResult(
+                step.call, False, f"配置错误: {e}", error_class="config",
+            )
+
         failures = [
             why
-            for e in step.expect
+            for e in expectations
             for ok in [evaluate(resp, e)]
             if not ok[0]
             for why in [ok[1]]

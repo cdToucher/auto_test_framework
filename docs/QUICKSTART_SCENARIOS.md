@@ -27,10 +27,10 @@
    ```
    看到模块归属中受影响模块 → 知道这次改动动了哪几个业务域。
 
-2. **Agent 自动起草**（在 CI 或本地 Agent CLI，按 atk-gen skill 流程）：
+2. **Agent 自动起草**（在 CI 或本地 Agent CLI，按 atk-authoring 协议流程）：
    - 读上下文包中被改动的 controller / service / view 文件补丁
    - 结合 `config/modules.yaml` 找到这些代码对应的业务模块
-   - 对每个改动的接口/页面生成 1-3 条场景草稿，存到 `scenarios/<module>/<slug>.yaml`
+   - 对每个改动的接口/页面生成 1-3 条 API/E2E 场景草稿，存到 `scenarios/<module>/gen-<sha>-N.yaml`
    - 草稿必须走 `atk validate` 通过
 
 3. **Dev/QA 审定**：审 `expect` 字段是否符合业务，commit 进去。

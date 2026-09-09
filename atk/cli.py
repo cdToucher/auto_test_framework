@@ -196,6 +196,82 @@ def _do_gate(
     return passed, verdicts, review_line, rec
 
 
+def _scenario_json(s: Scenario) -> dict[str, Any]:
+    return {
+        "name": s.scenario,
+        "file": s.file,
+        "module": s.module,
+        "priority": s.priority.value,
+        "tags": s.tags,
+        "env": s.env,
+    }
+
+
+def _plan_json(
+    rec: RunRecord,
+    affected: list[str],
+    groups: dict[str, list[str]],
+    reuse: list[Scenario],
+    errors: list[str],
+) -> dict[str, Any]:
+    return {
+        "run_id": rec.run_id,
+        "title": rec.title,
+        "base_ref": rec.base_ref,
+        "head_ref": rec.head_ref,
+        "affected_files": rec.affected_files,
+        "affected_modules": affected,
+        "groups": groups,
+        "reuse": [_scenario_json(s) for s in reuse],
+        "planned_scenarios": rec.planned_scenarios,
+        "load_errors": errors,
+        "next_actions": [
+            {
+                "owner": "ai",
+                "action": "run_reuse_scenarios",
+                "command": f"atk run --record-to {rec.run_id}",
+            },
+            {
+                "owner": "ai",
+                "action": "execute_uncovered_ui_intents",
+                "command": f"atk record {rec.run_id} --from-json <result.json>",
+            },
+            {
+                "owner": "human",
+                "action": "review_ai_draft_expectations",
+                "command": "atk review-draft <draft.yaml> --by <name> --verdict approve|reject",
+            },
+            {
+                "owner": "human",
+                "action": "whole_feature_review",
+                "command": f"atk review {rec.run_id} --by <name> --verdict approve|reject",
+            },
+            {
+                "owner": "ci",
+                "action": "gate",
+                "command": f"atk gate {rec.run_id} --format json",
+            },
+        ],
+    }
+
+
+def _gate_json(
+    passed: bool,
+    verdicts: list[tuple[bool, str]],
+    review_line: str,
+    rec: RunRecord,
+) -> dict[str, Any]:
+    return {
+        "run_id": rec.run_id,
+        "passed": passed,
+        "exit_code": 0 if passed else 1,
+        "verdicts": [{"ok": ok, "message": msg} for ok, msg in verdicts],
+        "review": review_line,
+        "blocking": [msg for ok, msg in verdicts if not ok],
+        "warnings": [review_line] + [msg for ok, msg in verdicts if ok and "受阻" in msg],
+    }
+
+
 @app.command()
 def validate(
     root: Path = typer.Option("scenarios"),
@@ -223,11 +299,14 @@ def plan(
     tags: Optional[str] = typer.Option(None, help="复用场景需包含的标签，逗号分隔"),
     title: str = typer.Option("", help="功能标题（整单）"),
     runs_dir: Path = typer.Option("reports/runs"),
+    output_format: str = typer.Option("text", "--format", help="输出格式：text|json"),
 ):
     """创建即时层运行记录并输出执行计划骨架（复用场景清单 + 待补全意图）。
 
     退出码：0=成功；2=git 失败（与 smoke/context/gate 一致）。
     """
+    if output_format not in ("text", "json"):
+        raise typer.BadParameter("format 必须是 text|json")
     tag_list = _parse_tags(tags)
     try:
         rec, affected, groups, reuse, errors = _do_plan(
@@ -236,6 +315,9 @@ def plan(
     except RuntimeError as e:
         typer.secho(str(e), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
+    if output_format == "json":
+        typer.echo(json.dumps(_plan_json(rec, affected, groups, reuse, errors), ensure_ascii=False, indent=2))
+        raise typer.Exit(code=0)
     typer.echo(f"功能：{title}" if title else "功能：（未命名）")
     typer.echo(f"run_id: {rec.run_id}")
     typer.echo(f"affected_modules: {', '.join(affected) if affected else '（无映射命中）'}")
@@ -260,15 +342,51 @@ _INTENT_STATUS = {"pass", "fail", "suspect", "blocked"}
 @app.command()
 def record(
     run_id: str,
-    title: str = typer.Option(..., help="测试意图标题"),
+    title: Optional[str] = typer.Option(None, help="测试意图标题"),
     status: str = typer.Option("pass", help="pass|fail|suspect|blocked"),
     note: str = typer.Option("", help="结论描述/根因猜测"),
     evidence: Optional[str] = typer.Option(None, help="证据文件路径，逗号分隔"),
+    from_json: Optional[Path] = typer.Option(
+        None, "--from-json", help="从 JSON 文件读取 AI/UI 实测结果"
+    ),
     runs_dir: Path = typer.Option("reports/runs"),
 ):
     """回填一条即时层意图的执行结果（Agent 用 ego-browser 实测后调用）。"""
+    if from_json:
+        try:
+            payload = json.loads(from_json.read_text(encoding="utf-8"))
+        except Exception as e:
+            typer.secho(f"读取 --from-json 失败：{e}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+        if not isinstance(payload, dict):
+            typer.secho("--from-json 顶层必须是对象", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+        if payload.get("run_id") and payload["run_id"] != run_id:
+            typer.secho(
+                f"--from-json run_id 不匹配：{payload['run_id']} != {run_id}",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        title = str(payload.get("title") or title or "")
+        status = str(payload.get("status") or status)
+        note = str(payload.get("note") or note or "")
+        ev = payload.get("evidence") or payload.get("evidence_files") or []
+        if isinstance(ev, str):
+            evidence = ",".join([evidence, ev]) if evidence else ev
+        elif isinstance(ev, list):
+            joined = ",".join(str(x) for x in ev)
+            evidence = ",".join([evidence, joined]) if evidence and joined else (evidence or joined)
+        else:
+            typer.secho("evidence 必须是字符串或字符串数组", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+    if not title or not title.strip():
+        raise typer.BadParameter("缺少 --title，或在 --from-json 中提供 title")
     if status not in _INTENT_STATUS:
         raise typer.BadParameter(f"status 必须是 {'/'.join(sorted(_INTENT_STATUS))}")
+    if status in ("fail", "suspect") and not note.strip():
+        typer.secho(f"{status} 必须带 --note 说明证据、复现步骤或疑点", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
     try:
         rec = load_run(run_id, str(runs_dir))
     except KeyError as e:
@@ -277,7 +395,7 @@ def record(
     sources = [p.strip() for p in evidence.split(",")] if evidence else []
     saved = add_evidence(rec, sources, str(runs_dir))
     missing = len([p for p in sources if p]) - len(saved)
-    rec.intents.append(IntentRecord(title=title, status=status, note=note, evidence=saved))
+    rec.intents.append(IntentRecord(title=title.strip(), status=status, note=note, evidence=saved))
     save_run(rec, str(runs_dir))
     warn = f"（{missing} 个证据文件不存在已跳过）" if missing else ""
     typer.echo(f"已记录：{title} [{status}] 证据 {len(saved)} 项{warn}")
@@ -412,7 +530,7 @@ def context(
     ),
     output_format: str = typer.Option("markdown", "--format", help="输出格式：markdown|json"),
 ):
-    """输出确定性变更上下文包（提交记录 + 补丁 + 模块归属），供 Agent 按 atk-gen skill 编写场景。"""
+    """输出确定性变更上下文包（提交记录 + 补丁 + 模块归属），供 Agent 按 atk-authoring 协议编写场景。"""
     if output_format not in ("markdown", "json"):
         raise typer.BadParameter("format 必须是 markdown|json")
     try:
@@ -433,7 +551,7 @@ def context(
     else:
         body = render_markdown(ctx)
     next_steps = (
-        "\n下一步（Agent 编排，参考 atk-gen skill）：\n"
+        "\n下一步（Agent 编排，参考 atk-authoring 协议）：\n"
         "  1. 阅读上方上下文包，按系统规则编写场景 YAML（禁止重复现有场景）\n"
         "  2. 写入 scenarios/<module>/gen-*.yaml，tags 加 ai-generated\n"
         "  3. atk validate 校验 -> 人工评审 expect -> atk run --tags ai-generated"
@@ -471,11 +589,14 @@ def gate(
     head: str = typer.Option("HEAD", help="待合并的变更引用"),
     repo: Path = typer.Option("."),
     runs_dir: Path = typer.Option("reports/runs"),
+    output_format: str = typer.Option("text", "--format", help="输出格式：text|json"),
 ):
     """合并门禁：校验运行记录与当前变更一致且无失败/未定性结论。
 
     退出码：0=放行；1=拦截；2=记录不存在。
     """
+    if output_format not in ("text", "json"):
+        raise typer.BadParameter("format 必须是 text|json")
     try:
         passed, verdicts, review_line, _rec = _do_gate(run_id, head, repo, runs_dir)
     except KeyError as e:
@@ -484,6 +605,10 @@ def gate(
     except RuntimeError as e:
         typer.secho(str(e), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
+
+    if output_format == "json":
+        typer.echo(json.dumps(_gate_json(passed, verdicts, review_line, _rec), ensure_ascii=False, indent=2))
+        raise typer.Exit(code=0 if passed else 1)
 
     for ok, msg in verdicts:
         typer.echo(("✓ " if ok else "✗ ") + msg)

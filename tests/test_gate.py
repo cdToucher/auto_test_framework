@@ -1,3 +1,4 @@
+import json
 import subprocess
 from pathlib import Path
 
@@ -63,6 +64,24 @@ def test_gate_pass(repo, monkeypatch):
     assert r.exit_code == 0, r.output
 
 
+def test_gate_json_pass(repo, monkeypatch):
+    from atk.run_store import create_run
+
+    monkeypatch.chdir(repo)
+    rec = create_run(runs_dir=repo / "reports" / "runs")
+    rec.scenarios.append(ScenarioSummary(
+        name="s", passed=True, error_class="none",
+        steps=[StepSummary(title="step", passed=True, detail="200")],
+    ))
+    _save(rec, repo)
+    r = CliRunner().invoke(app, ["gate", rec.run_id, "--format", "json"])
+    assert r.exit_code == 0, r.output
+    data = json.loads(r.output)
+    assert data["run_id"] == rec.run_id
+    assert data["passed"] is True
+    assert data["blocking"] == []
+
+
 def test_gate_blocks_on_case_failure(repo, monkeypatch):
     from atk.run_store import create_run
 
@@ -76,6 +95,23 @@ def test_gate_blocks_on_case_failure(repo, monkeypatch):
     r = CliRunner().invoke(app, ["gate", rec.run_id])
     assert r.exit_code == 1
     assert "用例失败" in r.output
+
+
+def test_gate_json_blocks_on_case_failure(repo, monkeypatch):
+    from atk.run_store import create_run
+
+    monkeypatch.chdir(repo)
+    rec = create_run(runs_dir=repo / "reports" / "runs")
+    rec.scenarios.append(ScenarioSummary(
+        name="s", passed=False, error_class="assertion",
+        steps=[StepSummary(title="step", passed=False, detail="status 500")],
+    ))
+    _save(rec, repo)
+    r = CliRunner().invoke(app, ["gate", rec.run_id, "--format", "json"])
+    assert r.exit_code == 1
+    data = json.loads(r.output)
+    assert data["passed"] is False
+    assert any("用例失败" in msg for msg in data["blocking"])
 
 
 def test_gate_blocks_on_unresolved_suspect(repo, monkeypatch):

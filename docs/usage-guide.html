@@ -80,7 +80,7 @@ atk init      # 只建缺失文件，绝不覆盖
 
 <h2>5. AI 补场景（介入点1：先实测，再审 expect 转正）</h2>
 <pre><code>atk context --base main --context-out /tmp/ctx.md   # 确定性上下文包：提交+补丁+模块+现有场景
-# 对 Agent 说“为这次改动补测试场景”（atk-gen skill 起草到 scenarios/&lt;module&gt;/gen-*.yaml）
+# 对 Agent 说“为这次改动补测试场景”（按 atk-authoring 协议起草到 scenarios/&lt;module&gt;/gen-*.yaml）
 atk validate && atk run --tags ai-generated         # 校验+先实测草稿（技术正确性）
 # 开发审 expect 与实测结论（介入点1）→ 通过后 atk review-draft approve 转正入库参与门禁</code></pre>
 <p class="tip">规则：只增不改旧文件；接口/字段必须来自 diff，禁臆造；expect 写具体码+业务字段。</p>

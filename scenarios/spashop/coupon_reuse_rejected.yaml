@@ -1,0 +1,21 @@
+scenario: SPA 商城同一会话重复使用优惠券会被拒绝
+module: spashop
+priority: P1
+tags: [api, negative, spashop]
+env: spashop
+steps:
+  - api:
+      call: "POST /api/login"
+      body: { username: "${username}", password: "${password}" }
+      expect: { status: 200, data.token: not_null }
+      capture: { token: "data.token" }
+  - api:
+      call: "POST /api/checkout"
+      headers: { Authorization: "Bearer ${token}" }
+      body: { skuId: "${test_sku}", qty: 1, coupon: "DUP10" }
+      expect: { status: 200, data.discount: 10 }
+  - api:
+      call: "POST /api/checkout"
+      headers: { Authorization: "Bearer ${token}" }
+      body: { skuId: "${test_sku}", qty: 1, coupon: "DUP10" }
+      expect: { status: 409, msg: coupon already used }
