@@ -19,7 +19,9 @@ description: 功能级AI主导冒烟测试工作流。当开发者给出功能�
    按 atk-gen skill 调 `atk context` 补草稿（`scenarios/<module>/gen-*.yaml`，只增不改）。
 
 3. **介入点 1——审 expect（停下）**：向开发展示草稿路径与 expect 清单，
-   请开发评审断言业务正确性；评审通过再 `atk run` 实测草稿。未通过不得入库。
+   请开发评审断言业务正确性；评审结论用命令落盘（approve 去 tag 转正，reject 移走留档）：
+   `atk review-draft <草稿路径> --by <评审人> --verdict approve|reject [--note ...]`
+   （reject 必须带 note）。未通过不得入库，未转正草稿参与执行会被 gate 拦截。
 
 4. **UI 意图实测**（每条无覆盖意图）：
    - 用 ego-browser 打开目标环境页面，按意图操作；

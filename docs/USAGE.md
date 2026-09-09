@@ -108,8 +108,9 @@ atk init        # 只建缺失文件，绝不覆盖：config/、scenarios/、fix
 | `atk smoke` | 一键冒烟：plan→run→report→gate（函数复用），`--title` 整单命名 | `atk smoke --base main --env staging --title "下单链路"` | 0 放行 / 1 拦截 / 2 受阻 |
 | `atk record` | 回填 UI 意图结论+截图证据 | `atk record <run_id> --title "..." --status pass --evidence a.png` | 0 / 2 记录不存在 |
 | `atk review` | 开发整单确认（approve/reject，reject 必带 note，只告警不拦截） | `atk review <run_id> --by zhangsan --verdict approve` | 0 / 1 参数错误 / 2 记录不存在 |
+| `atk review-draft` | 评审AI草稿（approve 去 tag 转正，reject 移走留档，未转正进 gate 拦截） | `atk review-draft scenarios/demo/gen-x-1.yaml --by qa --verdict approve` | 0 / 1 参数错误 / 2 非草稿 |
 | `atk report` | 渲染运行记录为 HTML | `atk report <run_id>` | 0 / 2 |
-| `atk gate` | 合并门禁：变更一致+无失败+无未定性 | `atk gate <run_id>` | 0 放行 / 1 拦截 / 2 |
+| `atk gate` | 合并门禁：变更一致+无失败+无未定性+无未评审草稿 | `atk gate <run_id>` | 0 放行 / 1 拦截 / 2 |
 | `atk console` | Web 控制台（需 `[console]`） | `atk console` / `atk console -g` | — |
 
 `run` 常用过滤：`--module`、`--tags a,b`（交集）、`--priority P1`（P0–P1 全跑）、`--junit out.xml`、`--record-to <id>`、`--record-new`。
@@ -138,7 +139,7 @@ Agent 编排版见 `.claude/skills/atk-smoke/SKILL.md`，CI 模板见 `.ci-examp
 ```bash
 atk smoke --base main --env staging --title "下单链路"   # 建单：拿 run_id，看复用结果
 # 缺场景 → AI 按 atk-gen skill 补草稿（scenarios/<module>/gen-*.yaml）
-# 介入点 1（停下）：开发审草稿 expect，通过再 atk run 实测
+# 介入点 1（停下）：开发审草稿 expect，用 atk review-draft 落盘结论，通过再 atk run 实测
 # AI 用 ego-browser 实测无覆盖意图并 atk record 回填
 # 介入点 2（停下）：开发 atk review <run_id> --by xxx --verdict approve 整单确认（SLA 24h）
 atk gate <run_id>                                        # 汇报门禁
@@ -152,8 +153,9 @@ atk gate <run_id>                                        # 汇报门禁
 ```bash
 atk context --base main --context-out /tmp/ctx.md   # 落盘上下文包
 # 对 Agent 说“为这次改动补测试场景”（走 atk-gen skill 起草到 scenarios/<module>/gen-*.yaml）
-atk validate && atk run --tags ai-generated         # 校验+实测草稿
-# 人工评审 expect 后入库
+atk validate                                        # 校验草稿
+atk review-draft <草稿> --by qa --verdict approve   # 评审转正（去 ai-generated tag）
+atk run --tags ai-generated                         # 实测转正场景
 ```
 
 规则：只增不改旧文件；接口/字段必须来自 diff，禁臆造；`expect` 必须具体（码+业务字段）。

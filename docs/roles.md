@@ -25,7 +25,7 @@
 |---|---|---|
 | MR 合并 | `atk gate <run_id>` | 变更未漂移 + 无用例失败 + 无 fail/suspect 未定性 |
 | 发布前 | 夜间流水线全绿 | P0/P1 全过 + 无未定性 suspect |
-| 场景入库 | `atk validate` + QA 评审 | 文件合法 + 断言业务正确 |
+| 场景入库 | `atk validate` + `atk review-draft` | 文件合法 + 草稿已转正（去 `ai-generated` tag，未转正参与执行 gate 直接拦截） |
 
 退出码语义：`0` 放行；`1` 拦截（用例失败 / 未定性 / 变更漂移）；`2` 配置或记录缺失（不判人失败）。
 

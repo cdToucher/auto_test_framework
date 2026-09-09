@@ -30,7 +30,10 @@ description: 根据变更上下文包自动起草回归场景 YAML。当开发�
     （短哈希取 `git rev-parse --short HEAD`，N 从 1 递增；只增不改）。
 
 3. **校验与实测**：`atk validate` 通过后，向用户展示草稿路径与 expect 清单请人评审；
-   评审通过再 `atk run --tags ai-generated` 实测。把实测结论与需人定性的 expect 一并交人确认。
+   评审结论用 `atk review-draft <草稿路径> --by <评审人> --verdict approve|reject [--note ...]`
+   落盘（approve 去掉 `ai-generated` tag 转正，reject 移到 `reports/rejected/` 留档，不再加载）；
+   转正后再 `atk run --tags ai-generated` 实测。把实测结论与需人定性的 expect 一并交人确认。
+   未转正的草稿若参与执行，`atk gate` 直接拦截。
 
 ## 禁止事项
 

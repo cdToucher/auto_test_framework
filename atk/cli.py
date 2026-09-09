@@ -10,6 +10,7 @@ import typer
 
 from .diff_analyzer.git_diff import changed_files
 from .diff_analyzer.modules import classify, load_module_map
+from .drafts import DRAFT_TAG, is_draft, review_draft
 from .executors.runner import RunReport, Runner
 from .generator.context import build_context, commit_log, render_markdown
 from .reporter.html_reporter import render_html, render_run_html
@@ -141,6 +142,11 @@ def _do_gate(
         blocked_n = len(rec.scenarios) - sum(1 for s in rec.scenarios if s.passed)
         verdicts.append((True, f"复用场景 {len(rec.scenarios)} 个无用例失败"
                                 + (f"（受阻 {blocked_n} 个）" if blocked_n else "")))
+    unreviewed = sorted({s.name for s in rec.scenarios if s.file and is_draft(s.file)})
+    if unreviewed:
+        verdicts.append((False, f"存在未评审AI草稿 {len(unreviewed)} 个: "
+                                + ", ".join(unreviewed)
+                                + f"（请先 atk review-draft 评审转正，{DRAFT_TAG} tag 未去掉不得参与门禁）"))
     bad_intents = [i for i in rec.intents if i.status in ("fail", "suspect")]
     if bad_intents:
         verdicts.append((False, "存在未定性结论: " + "; ".join(f"{i.title}[{i.status}]" for i in bad_intents)))
@@ -264,6 +270,28 @@ def review(
     rec.reviews.append(ReviewRecord(by=by, verdict=verdict, note=note, at=now))
     save_run(rec, str(runs_dir))
     typer.echo(f"已确认：{run_id} by {by} [{verdict}]" + (f" {note}" if note else ""))
+
+
+@app.command("review-draft")
+def review_draft_cmd(
+    path: Path = typer.Argument(..., help="草稿场景 YAML 路径"),
+    by: str = typer.Option(..., help="评审人"),
+    verdict: str = typer.Option(..., help="approve|reject"),
+    note: str = typer.Option("", help="评审备注；reject 时必填"),
+    reports_dir: Path = typer.Option("reports", help="评审日志与驳回文件目录"),
+):
+    """评审AI草稿：approve 去 tag 转正，reject 移走留档。退出码 0/1/2。"""
+    if verdict not in ("approve", "reject"):
+        raise typer.BadParameter("verdict 必须是 approve|reject")
+    if verdict == "reject" and not note.strip():
+        typer.secho("reject 必须带 --note 说明原因", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    try:
+        msg = review_draft(path, by, verdict, note, reports_dir)
+    except ValueError as e:
+        typer.secho(str(e), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    typer.echo(msg)
 
 
 @app.command()
