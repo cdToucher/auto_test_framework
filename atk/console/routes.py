@@ -210,7 +210,13 @@ def setup(app):
         p = (base / run_id / "report.html").resolve()
         if not p.is_file() or not p.is_relative_to(base):
             raise HTTPException(404, run_id)
-        return FileResponse(p)
+        return FileResponse(
+            p,
+            headers={
+                "X-Content-Type-Options": "nosniff",
+                "Content-Security-Policy": "sandbox",
+            },
+        )
 
     @r.get("/runs/{run_id}/evidence/{name:path}")
     def evidence(run_id: str, name: str):
