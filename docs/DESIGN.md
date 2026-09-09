@@ -87,7 +87,7 @@ AI 实测 UI 步骤时结果比 API 更不可控：图片识别偏差、动态�
 
 ## 4. CLI 命令设计原则
 
-9 个子命令，**全部围绕"YAML 在哪儿、跑哪些、跑完怎么办"三个问题**展开：
+12 个子命令，**全部围绕"YAML 在哪儿、跑哪些、跑完怎么办"三个问题**展开：
 
 ```
 init         脚手架（新工程开箱）
@@ -95,7 +95,10 @@ validate     静态校验（不入库之前先看看合不合法）
 context      输出变更上下文包（提交记录 + 补丁 + 模块归属，供 Agent 起草场景）
 plan         选场景（context 上下文包驱动或手动）
 run          执行（落 reports/runs/）
+smoke        一键冒烟（plan→run→report→gate 函数复用，AI 主导入口）
 record       人为定性结果（pass/fail/suspect/blocked + 证据）
+review       开发整单确认（只告警不拦截）
+review-draft 评审 AI 草稿（approve 转正 / reject 移走留档）
 report       把运行记录渲染成 HTML
 console      Web 控制台（YAML 的视图和编辑器，需 .[console] extra）
 gate         CI 门禁判定（基于结构化记录，不基于 AI 自由发挥）
@@ -105,7 +108,7 @@ gate         CI 门禁判定（基于结构化记录，不基于 AI 自由发挥
 
 - **命令之间不共享中间状态**。每个命令读 YAML / 写 YAML，不依赖前一步的内存。
 - **人类友好**。命令名是英文单词而不是缩写（`gate` 而不是 `g`），可读性优先于节省三个字符。
-- **CI 友好**。所有命令支持 `--json` 风格的输出、退出码规范一致。
+- **CI 友好**。`context` 支持 `--format json` 机器消费，其余命令输出人类可读文本、退出码规范一致。
 - **AI 友好**。命令都能被 Agent 编排，不需要交互式输入。
 
 `gate` 是唯一"强判定"的命令——MR 是否可合并由它决定。它只做结构化比对：变更文件 vs 运行记录 affected_files、意图状态表里有没有未定性的 fail/suspect、有没有用例失败。不允许 AI 给"通过"就通过。
@@ -220,8 +223,8 @@ AI 生成的复杂 YAML 可能超出表单能力（嵌套条件、特殊 hooks�
 ### 7.4 跨项目用 uv tool install
 
 ```bash
-# 一次性（已实测）
-uv tool install --editable ".[console]" /Users/dongchen/ClaudeCodeProjects/auto_test_framework
+# 一次性（已实测；extra 必须写进路径引号里，见 docs/USAGE.md §2）
+uv tool install --editable "/Users/dongchen/ClaudeCodeProjects/auto_test_framework[console]"
 
 # 之后任意工程
 cd 你的项目
@@ -273,7 +276,7 @@ SLA 是流程轨的"硬约束"——没有它，AI 的 suspect 永远不会被�
 
 ## 10. 发布路线（验证提效后立项）
 
-原型当前形态：fork 仓库 `feature/web-console` 分支 14 个提交，113 测试全绿。个人使用确认提效后启动发布里程碑：
+原型当前形态：fork 仓库 `feature/web-console` 分支 14 个提交，157 测试全绿。个人使用确认提效后启动发布里程碑：
 
 ```
 pip 发包（atk + console dist 内嵌）

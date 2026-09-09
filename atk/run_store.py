@@ -99,8 +99,13 @@ def create_run(
     runs_dir: Path | str = "reports/runs",
 ) -> RunRecord:
     now = dt.datetime.now()
+    base_id = f"smoke-{now.strftime('%Y%m%d-%H%M%S')}"
+    run_id, n = base_id, 2
+    while (Path(runs_dir) / run_id).exists():
+        run_id = f"{base_id}-{n}"
+        n += 1
     rec = RunRecord(
-        run_id=f"smoke-{now.strftime('%Y%m%d-%H%M%S')}",
+        run_id=run_id,
         created_at=now.isoformat(timespec="seconds"),
         title=title,
         base_ref=base_ref,
@@ -125,7 +130,13 @@ def load_run(run_id: str, runs_dir: Path | str = "reports/runs") -> RunRecord:
     f = _run_yaml(run_id, runs_dir)
     if not f.exists():
         raise KeyError(f"运行记录不存在: {run_id}")
-    return RunRecord(**yaml.safe_load(f.read_text(encoding="utf-8")))
+    try:
+        data = yaml.safe_load(f.read_text(encoding="utf-8"))
+    except yaml.YAMLError as e:
+        raise KeyError(f"运行记录损坏: {run_id}（{e}）")
+    if not isinstance(data, dict):
+        raise KeyError(f"运行记录为空或损坏: {run_id}")
+    return RunRecord(**data)
 
 
 def save_run(rec: RunRecord, runs_dir: Path | str = "reports/runs") -> Path:

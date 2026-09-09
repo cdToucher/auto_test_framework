@@ -24,6 +24,9 @@ def load_env(config_path: Path | str, name: str) -> EnvConfig:
     cfg = EnvConfig(**data[name])
     # vars 中的 ${env:NAME} 在加载期即解析，避免占位符透传到请求
     cfg.vars = {k: substitute(v, {}) for k, v in cfg.vars.items()}
+    # base_url 同口径解析，使 CI 模板的 ${env:ATK_BASE_URL} 生效；
+    # 缺失变量行为与 vars 一致（${env:} 缺失 -> ""，未知 ${var} 保留原串）
+    cfg.base_url = substitute(cfg.base_url, {})
     return cfg
 
 

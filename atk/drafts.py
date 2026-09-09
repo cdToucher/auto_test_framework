@@ -32,15 +32,19 @@ def is_draft(path: Path | str) -> bool:
         raw = yaml.safe_load(p.read_text(encoding="utf-8"))
     except Exception:
         return False
-    return isinstance(raw, dict) and DRAFT_TAG in (raw.get("tags") or [])
+    if not isinstance(raw, dict):
+        return False
+    tags = raw.get("tags") or []
+    return isinstance(tags, list) and DRAFT_TAG in tags
 
 
 def _append_log(entry: DraftReview, reports_dir: Path | str) -> None:
     log = Path(reports_dir) / REVIEW_LOG
-    items = []
+    items: list = []
     if log.exists():
         try:
-            items = yaml.safe_load(log.read_text(encoding="utf-8")) or []
+            loaded = yaml.safe_load(log.read_text(encoding="utf-8")) or []
+            items = loaded if isinstance(loaded, list) else []
         except Exception:
             items = []
     items.append(entry.model_dump())
@@ -69,15 +73,19 @@ def review_draft(
 ) -> str:
     """评审单份草稿。approve 去 tag 就地转正；reject 移到 reports/rejected。
 
-    返回人类可读结论。非草稿抛 ValueError。
+    返回人类可读结论。verdict 非法或非草稿抛 ValueError（防 API 直调
+    误传 verdict 走 reject 分支移走文件）。
     """
+    if verdict not in ("approve", "reject"):
+        raise ValueError(f"verdict 必须是 approve|reject， got: {verdict!r}")
     p = Path(path)
     if not is_draft(p):
         raise ValueError(f"不是AI草稿（含{ DRAFT_TAG } tag 的场景文件）: {p}")
     now = dt.datetime.now().isoformat(timespec="seconds")
     if verdict == "approve":
         raw = yaml.safe_load(p.read_text(encoding="utf-8"))
-        tags = [t for t in (raw.get("tags") or []) if t != DRAFT_TAG]
+        tags = raw.get("tags") or []
+        tags = [t for t in tags if t != DRAFT_TAG] if isinstance(tags, list) else []
         if tags:
             raw["tags"] = tags
         else:

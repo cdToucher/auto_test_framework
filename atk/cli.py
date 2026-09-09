@@ -50,16 +50,24 @@ def _do_plan(
     tag_list: Optional[list[str]],
     title: str,
     runs_dir: Path,
+    priority: Optional[Priority] = None,
 ) -> tuple[RunRecord, list[str], dict[str, list[str]], list[Scenario], list[str]]:
-    """plan 确定性逻辑：影响面 -> 复用检索 -> create_run。抛 RuntimeError(git)。"""
+    """plan 确定性逻辑：影响面 -> 复用检索 -> create_run。抛 RuntimeError(git)。
+
+    priority 与 run 共用口径（仅保留该优先级及更高，P0–P1 全跑），保证
+    smoke 的复用清单与实际执行一致，避免 planned_scenarios 脱节。
+    """
     files = changed_files(base, head, str(repo))
     groups = classify(files, load_module_map(module_map))
     affected = sorted(m for m in groups if m != "__unmapped__")
     scs, errors = load_scenarios(root)
+    rank = {Priority.P0: 0, Priority.P1: 1, Priority.P2: 2}
     reuse = [
         s
         for s in select(scs)
-        if s.module in affected and (not tag_list or set(tag_list) <= set(s.tags))
+        if s.module in affected
+        and (not tag_list or set(tag_list) <= set(s.tags))
+        and (priority is None or rank[s.priority] <= rank[priority])
     ]
     try:
         # 运行记录只保留 short/subject 轻量展示（完整提交正文/文件清单见 atk context），避免 run.yaml 膨胀
@@ -93,8 +101,13 @@ def _do_run(
     report_dir: Path,
     junit: Optional[Path],
     on_result: Optional[Callable[[Any], None]] = None,
-) -> tuple[RunReport, Path, Optional[Path]]:
-    """run 执行逻辑：Runner 跑场景 + HTML/JUnit 落盘。抛 KeyError(环境缺失)。"""
+    render: bool = True,
+) -> tuple[RunReport, Optional[Path], Optional[Path]]:
+    """run 执行逻辑：Runner 跑场景 + HTML/JUnit 落盘。抛 KeyError(环境缺失)。
+
+    render=False 时只执行不落盘，由调用方合并多模块结果后统一渲染
+    （smoke 多模块一次渲染 report-latest.html，避免逐轮覆盖）。
+    """
     runner = Runner(env_file=env_file, scenarios_root=root)
     report = runner.run(
         env_name=env,
@@ -103,9 +116,24 @@ def _do_run(
         priority=priority,
         on_result=on_result,
     )
+    if not render:
+        return report, None, None
     html_path = render_html(report, Path(report_dir) / "report-latest.html")
     junit_path = write_junit(report, junit) if junit else None
     return report, html_path, junit_path
+
+
+def _junit_for_module(
+    junit: Optional[Path], mod: Optional[str], multi: bool
+) -> Optional[Path]:
+    """多模块共用 --junit 路径时按模块加后缀（如 junit.xml -> junit-demo.xml）。
+
+    单模块/全量执行保持原路径，避免逐轮覆盖丢失他模块结果。
+    """
+    if not junit or not multi or not mod:
+        return junit
+    p = Path(junit)
+    return p.parent / f"{p.stem}-{mod}{p.suffix}"
 
 
 def _merge_report_into_run(report: RunReport, record_to: str, runs_dir: Path) -> None:
@@ -195,11 +223,18 @@ def plan(
     title: str = typer.Option("", help="功能标题（整单）"),
     runs_dir: Path = typer.Option("reports/runs"),
 ):
-    """创建即时层运行记录并输出执行计划骨架（复用场景清单 + 待补全意图）。"""
+    """创建即时层运行记录并输出执行计划骨架（复用场景清单 + 待补全意图）。
+
+    退出码：0=成功；2=git 失败（与 smoke/context/gate 一致）。
+    """
     tag_list = _parse_tags(tags)
-    rec, affected, groups, reuse, errors = _do_plan(
-        base, head, repo, root, module_map, tag_list, title, runs_dir
-    )
+    try:
+        rec, affected, groups, reuse, errors = _do_plan(
+            base, head, repo, root, module_map, tag_list, title, runs_dir
+        )
+    except RuntimeError as e:
+        typer.secho(str(e), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
     typer.echo(f"功能：{title}" if title else "功能：（未命名）")
     typer.echo(f"run_id: {rec.run_id}")
     typer.echo(f"affected_modules: {', '.join(affected) if affected else '（无映射命中）'}")
@@ -255,7 +290,10 @@ def review(
     note: str = typer.Option("", help="确认备注；reject 时必填"),
     runs_dir: Path = typer.Option("reports/runs"),
 ):
-    """开发确认运行记录（整单确认）。reject 必须带 note。"""
+    """开发确认运行记录（整单确认）。reject 必须带 note。
+
+    退出码：0=确认成功；1=reject 缺 --note；2=verdict 非法或记录不存在。
+    """
     if verdict not in ("approve", "reject"):
         raise typer.BadParameter("verdict 必须是 approve|reject")
     if verdict == "reject" and not note.strip():
@@ -280,7 +318,10 @@ def review_draft_cmd(
     note: str = typer.Option("", help="评审备注；reject 时必填"),
     reports_dir: Path = typer.Option("reports", help="评审日志与驳回文件目录"),
 ):
-    """评审AI草稿：approve 去 tag 转正，reject 移走留档。退出码 0/1/2。"""
+    """评审AI草稿：approve 去 tag 转正，reject 移走留档。
+
+    退出码：0=评审落盘；1=reject 缺 --note；2=verdict 非法或非草稿文件。
+    """
     if verdict not in ("approve", "reject"):
         raise typer.BadParameter("verdict 必须是 approve|reject")
     if verdict == "reject" and not note.strip():
@@ -473,10 +514,10 @@ def smoke(
     退出码：0=放行；1=用例失败/门禁拦截；2=环境受阻或记录缺失。
     """
     tag_list = _parse_tags(tags)
-    # 1) plan 逻辑复用（新建 run_id）
+    # 1) plan 逻辑复用（新建 run_id；priority 与执行侧同口径过滤复用清单）
     try:
         rec, affected, groups, reuse, errors = _do_plan(
-            base, head, repo, root, module_map, tag_list, title, runs_dir
+            base, head, repo, root, module_map, tag_list, title, runs_dir, priority
         )
     except RuntimeError as e:
         typer.secho(str(e), fg=typer.colors.RED, err=True)
@@ -487,11 +528,13 @@ def smoke(
     typer.echo(f"affected_modules: {', '.join(affected) if affected else '（无映射命中）'}")
     for e in errors:
         typer.secho(f"[跳过] {e}", fg=typer.colors.YELLOW, err=True)
+    for u in groups.get("__unmapped__", []):
+        typer.echo(f"unmapped: {u}")
     for s in reuse:
         typer.echo(f"reuse: [{s.priority.value}] {s.scenario} ({s.file})")
 
-    # 2) run 逻辑复用：按 affected_modules 逐模块执行并逐个并入记录
-    #    affected 为空时全量执行（module=None），与 plan 复用清单脱节问题修复
+    # 2) run 逻辑复用：按 affected_modules 逐模块执行并逐个并入记录；
+    #    各模块结果内存合并后一次渲染 report-latest.html，junit 按模块分文件
     def on_result(r: Any) -> None:
         mark = "✓" if r.passed else "✗"
         last = r.steps[-1].detail if r.steps else r.error_class
@@ -500,27 +543,32 @@ def smoke(
 
     full_run = not affected
     modules_to_run: list[Optional[str]] = list(affected) if affected else [None]
+    multi = len(modules_to_run) > 1
     run_exit = 0
     run_error: Optional[Exception] = None
+    module_reports: list[tuple[str, RunReport]] = []
     for mod in modules_to_run:
         label = mod if mod else "全量"
         try:
-            report, latest_path, junit_path = _do_run(
-                env, mod, tag_list, priority, env_file, root, report_dir, junit,
-                on_result=on_result,
+            report, _, _ = _do_run(
+                env, mod, tag_list, priority, env_file, root, report_dir, None,
+                on_result=on_result, render=False,
             )
         except KeyError as e:
             typer.secho(f"环境配置错误：{e}", fg=typer.colors.RED, err=True)
             run_exit = 2
             run_error = e
             break
+        module_junit = _junit_for_module(junit, mod, multi)
+        junit_path = write_junit(report, module_junit) if module_junit else None
         typer.echo(
             f"\n结果[{label}]：通过 {report.passed_count}/{report.total}"
             f"（用例失败 {report.failed_count}，受阻 {report.blocked_count}，"
-            f"加载跳过 {len(report.load_errors)}）\n报告：{latest_path}"
+            f"加载跳过 {len(report.load_errors)}）"
         )
         if junit_path:
             typer.echo(f"JUnit：{junit_path}")
+        module_reports.append((label, report))
         try:
             _merge_report_into_run(report, run_id, runs_dir)
         except KeyError as e:
@@ -531,6 +579,33 @@ def smoke(
             run_exit = 1
         elif report.exit_code == 2 and run_exit == 0:
             run_exit = 2
+
+    # 空 affected 全量执行后回填 planned_scenarios 为实际执行文件，消脱节
+    if full_run and run_error is None:
+        try:
+            fresh_rec = load_run(run_id, str(runs_dir))
+            fresh_rec.planned_scenarios = sorted(
+                {s.file for s in fresh_rec.scenarios if s.file}
+            )
+            save_run(fresh_rec, str(runs_dir))
+        except KeyError as e:
+            typer.secho(str(e), fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+
+    # 合并各模块结果一次渲染，不再逐轮覆盖 report-latest.html
+    if module_reports:
+        combined = RunReport(
+            env_name=module_reports[0][1].env_name,
+            started_at=module_reports[0][1].started_at,
+            results=[r for _, rep in module_reports for r in rep.results],
+            load_errors=[e for _, rep in module_reports for e in rep.load_errors],
+        )
+        latest_path = render_html(combined, Path(report_dir) / "report-latest.html")
+        typer.echo(
+            f"\n合计：通过 {combined.passed_count}/{combined.total}"
+            f"（用例失败 {combined.failed_count}，受阻 {combined.blocked_count}，"
+            f"加载跳过 {len(combined.load_errors)}）\n报告：{latest_path}"
+        )
 
     # 3) report 逻辑复用
     try:
@@ -652,14 +727,6 @@ def init(
     raise typer.Exit(code=0)
 
 
-def main():
-    app()
-
-
-if __name__ == "__main__":
-    main()
-
-
 @app.command("console")
 def console_cmd(
     port: int = typer.Option(8900, help="监听端口"),
@@ -670,3 +737,11 @@ def console_cmd(
     from .console import serve
 
     serve(port=port, global_mode=g, project_root=project_root)
+
+
+def main():
+    app()
+
+
+if __name__ == "__main__":
+    main()

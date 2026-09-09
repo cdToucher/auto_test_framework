@@ -38,7 +38,7 @@ mtime 乐观锁防外部覆盖）、触发执行（SSE 实时日志）、运行�
 APScheduler 到点自动执行并写入运行记录；控制台需常驻，停机不补跑）。
 界面/CLI 触发的执行均带 `--record-new` 自动入历史。前端构建产物已入库，无需 Node 环境。
 
-其他项目使用：`uv tool install --editable ".[console]" /path/to/auto_test_framework`
+其他项目使用：`uv tool install --editable "/path/to/auto_test_framework[console]"`
 后即获得全局 `atk` 命令；目标项目内 `atk init && atk console`。
 
 已知限制：表单保存重写 YAML 会丢失注释；定时任务需控制台常驻。

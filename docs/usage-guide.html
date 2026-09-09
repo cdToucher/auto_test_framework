@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>atk 使用指南（图文版）</title>
+<style>
+body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;max-width:900px;margin:0 auto;padding:24px;color:#222;line-height:1.7}
+h1{border-bottom:3px solid #1677ff;padding-bottom:8px}
+h2{margin-top:40px;color:#1677ff;border-left:4px solid #1677ff;padding-left:10px}
+img{max-width:100%;border:1px solid #ddd;border-radius:8px;margin:12px 0}
+pre{background:#1e1e1e;color:#d6deeb;padding:14px;border-radius:8px;overflow:auto;font-size:13px}
+code{background:#f0f4ff;padding:1px 6px;border-radius:4px}
+pre code{background:none;padding:0}
+.tip{background:#fffbe6;border:1px solid #ffe58f;padding:10px 14px;border-radius:8px}
+.flow{background:#f6ffed;border:1px solid #b7eb8f;padding:10px 14px;border-radius:8px;white-space:pre-line}
+table{border-collapse:collapse;width:100%;margin:12px 0}
+th,td{border:1px solid #ddd;padding:8px;text-align:left;font-size:14px}
+th{background:#fafafa}
+.cap{color:#666;font-size:13px;text-align:center;margin-top:-6px}
+</style>
+</head>
+<body>
+<h1>atk 使用指南（图文版）</h1>
+<p>atk = AI 原生双层测试框架。<b>AI 全程主导</b> plan→run→record→report→gate；
+开发只在 <b>两处介入</b>：① 审 AI 起草场景的 expect；② 整单确认结果。
+以下截图均为本机实测（demo 待办应用 + smoke-20260909-100120 真实运行记录）。命令共 12 个。</p>
+
+<h2>0. 安装与接入</h2>
+<pre><code># 公共托管版（包名 dev2atf，命令仍是 atk）
+uv tool install dev2atf
+uv tool install "dev2atf[console]"   # 带 Web 控制台
+
+# 新项目接入
+cd /path/to/你的项目
+atk init      # 只建缺失文件，绝不覆盖
+# 再改 config/environments.yaml（环境地址）与 config/modules.yaml（代码→模块映射）</code></pre>
+<p class="tip">editable 本地联调版与卸载方法见 <code>docs/USAGE.md §2</code>。</p>
+
+<h2>1. 一键冒烟：atk smoke（AI 入口）</h2>
+<p>开发只需给功能描述（或基线），AI 一条命令建单并跑完确定性部分：</p>
+<pre><code>atk smoke --base main --env staging --title "下单链路"</code></pre>
+<p>实测输出（功能标题 + run_id + 门禁结论 + 待办清单一次给全）：</p>
+<pre><code>已并入运行记录 smoke-20260909-100120（模块 全量）
+报告：reports/runs/smoke-20260909-100120/report.html
+✓ 变更一致（7 个文件）
+✗ 用例失败 2 个: 下单后可查询到待支付订单, 用印列表分页查询
+⚠ 未经开发确认（仅告警，不拦截）
+
+门禁结论：拦截
+待办清单：
+- 失败场景：下单后可查询到待支付订单, 用印列表分页查询（2 个待修复，见上断言详情）
+- 无覆盖意图：需用 ego-browser 实测新意图并 atk record smoke-20260909-100120 回填
+- 草稿评审：如有 scenarios/**/gen-* 草稿场景需人工评审 expect 后入库</code></pre>
+<p class="tip">输出中的 2 个失败是跨环境场景在 demoapp 下的预期失败；“未经开发确认”只告警、不拦截 gate。</p>
+
+<h2>2. UI 实测回填：atk record</h2>
+<p>AI 用浏览器实测页面意图（下图：登录 demo 应用 → 添加任务 → 完成后显示“已完成”），截图即证据：</p>
+<img src="assets/demo-login.png" alt="demo应用登录页">
+<p class="cap">图1：被测系统登录页（alice / secret123）</p>
+<img src="assets/demo-todos.png" alt="待办列表含已完成任务">
+<p class="cap">图2：添加“使用指南演示任务”并点击完成后，条目变为已完成</p>
+<pre><code>atk record smoke-20260909-100120 --title "页面添加待办并完成" --status pass \
+  --note "登录后添加使用指南演示任务并完成，列表显示已完成" \
+  --evidence docs/assets/demo-todos.png
+# 已记录：页面添加待办并完成 [pass] 证据 1 项</code></pre>
+<table><tr><th>status</th><th>含义</th><th>gate</th></tr>
+<tr><td>pass</td><td>断言成立</td><td>放行项</td></tr>
+<tr><td>fail / suspect</td><td>复现问题 / 疑似（note 写重现步骤）</td><td>拦截，需人定性</td></tr>
+<tr><td>blocked</td><td>环境/权限原因无法执行</td><td>不拦截，仅公示</td></tr></table>
+
+<h2>3. 报告：atk report</h2>
+<p>报告自动带 <b>功能标题、提交清单、确认状态</b> 三段（开发一眼看全）：</p>
+<img src="assets/report.png" alt="运行报告页">
+<p class="cap">图3：报告页——功能“使用指南演示”、提交清单、已获开发确认、场景结论表</p>
+
+<h2>4. 整单确认：atk review（介入点2）</h2>
+<pre><code>atk review smoke-20260909-100120 --by zhangsan --verdict approve --note "演示确认"
+# 已确认：smoke-20260909-100120 by zhangsan [approve] 演示确认</code></pre>
+<p class="tip">reject 必须带 note（退回 AI 返工）；确认状态按最后一条判定，可覆盖；无确认 gate 只告警 <code>⚠ 未经开发确认</code>，不拦截（SLA：24h 内确认，超时视发布阻塞）。</p>
+
+<h2>5. AI 补场景（介入点1：先实测，再审 expect 转正）</h2>
+<pre><code>atk context --base main --context-out /tmp/ctx.md   # 确定性上下文包：提交+补丁+模块+现有场景
+# 对 Agent 说“为这次改动补测试场景”（atk-gen skill 起草到 scenarios/&lt;module&gt;/gen-*.yaml）
+atk validate && atk run --tags ai-generated         # 校验+先实测草稿（技术正确性）
+# 开发审 expect 与实测结论（介入点1）→ 通过后 atk review-draft approve 转正入库参与门禁</code></pre>
+<p class="tip">规则：只增不改旧文件；接口/字段必须来自 diff，禁臆造；expect 写具体码+业务字段。</p>
+
+<h2>6. Web 控制台（可选）</h2>
+<p><code>atk console</code>（需 <code>[console]</code>）：场景树浏览、表单/源码双模式编排、SSE 实时执行、运行历史、定时任务。</p>
+<img src="assets/console.png" alt="atk控制台场景浏览">
+<p class="cap">图4：控制台——8 个场景按模块/优先级列表展示</p>
+
+<h2>7. 命令速查</h2>
+<table><tr><th>命令</th><th>谁用</th><th>作用</th></tr>
+<tr><td>smoke</td><td>AI</td><td>一键：plan→run→report→gate</td></tr>
+<tr><td>context</td><td>AI</td><td>变更上下文包，供起草场景</td></tr>
+<tr><td>plan / run / report / gate</td><td>AI·CI</td><td>分步命令（CI 备选）</td></tr>
+<tr><td>record</td><td>AI</td><td>回填 UI 实测结论+截图</td></tr>
+<tr><td>review</td><td>开发</td><td>整单确认（介入点2）</td></tr>
+<tr><td>review-draft</td><td>开发</td><td>评审 AI 草稿：approve 转正 / reject 移走（介入点1落盘）</td></tr>
+<tr><td>validate</td><td>AI·开发</td><td>场景合法性（介入点1前置）</td></tr>
+<tr><td>init / console</td><td>开发</td><td>建骨架 / 可视化控制台</td></tr></table>
+<p>文字版详见 <code>docs/USAGE.md</code>，角色与 SLA 见 <code>docs/roles.md</code>，发布流程见 <code>docs/PUBLISH.md</code>。</p>
+</body>
+</html>
