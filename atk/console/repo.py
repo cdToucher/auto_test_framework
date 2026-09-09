@@ -33,6 +33,12 @@ def scan_tree(root: Path) -> dict:
     if not root.exists():
         return {"dirs": [], "scenarios": []}
     for f in sorted({*root.rglob("*.yaml"), *root.rglob("*.yml")}):
+        try:
+            # 收敛工程根内：跳过指向根外的 symlink，避免读取任意文件
+            if not f.resolve().is_relative_to(root.resolve()):
+                continue
+        except Exception:
+            continue
         rel = str(f.relative_to(root))
         item = {"path": rel, "name": f.name}
         # 确保父目录链存在

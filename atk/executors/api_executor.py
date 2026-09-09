@@ -33,9 +33,15 @@ class ApiExecutor:
                 f"call 格式非法：'{step.call}'，应为 'METHOD /path'（如 'GET /ping'）",
                 error_class="config",
             )
-        method, path = parts[0].upper(), substitute(parts[1], self.variables)
-        headers = substitute(step.headers, self.variables)
-        body = substitute(step.body, self.variables) if step.body is not None else None
+        method, raw_path = parts[0].upper(), parts[1]
+        try:
+            path = substitute(raw_path, self.variables)
+            headers = substitute(step.headers, self.variables)
+            body = substitute(step.body, self.variables) if step.body is not None else None
+        except Exception as e:
+            return StepResult(
+                step.call, False, f"配置错误: {e}", error_class="config",
+            )
         resp = None
         last_err: Exception | None = None
         for attempt in range(step.retries + 1):
@@ -45,6 +51,14 @@ class ApiExecutor:
                 break
             except httpx.HTTPError as e:
                 last_err = e
+            except Exception as e:
+                # 非 HTTP 异常（URL非法/变量替换产物非法等）归配置类，不杀整个 run
+                return StepResult(
+                    step.call,
+                    False,
+                    f"配置错误: {e}",
+                    error_class="config",
+                )
         if last_err is not None or resp is None:
             return StepResult(
                 step.call,

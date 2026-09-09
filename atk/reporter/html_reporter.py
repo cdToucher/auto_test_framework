@@ -139,8 +139,8 @@ def render_run_html(rec, out_path: Path | str) -> Path:
     title_h2 = f"<h2>功能：{_html.escape(title)}</h2>" if title else ""
     doc = (
         "<!doctype html><html lang=zh><head><meta charset=utf-8>"
-        f"<title>atk 运行报告 {rec.run_id}</title><style>{_CSS}</style></head><body>"
-        f"<h1>即时层运行报告 · {rec.run_id} · {rec.created_at}</h1>"
+        f"<title>atk 运行报告 {_html.escape(str(rec.run_id))}</title><style>{_CSS}</style></head><body>"
+        f"<h1>即时层运行报告 · {_html.escape(str(rec.run_id))} · {_html.escape(str(rec.created_at))}</h1>"
         f"{title_h2}"
         f"<div class=sum>基线 {_html.escape(rec.base_ref)} → "
         f"{_html.escape(rec.head_ref)}　受影响模块："

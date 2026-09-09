@@ -20,12 +20,25 @@ class SaveBody(BaseModel):
     force: bool = False
 
 
-def _run_summaries(root: Path) -> list[dict]:
+def _run_summaries(root: Path, limit: int | None = None) -> list[dict]:
     runs_dir = root / "reports" / "runs"
     out = []
     if not runs_dir.exists():
         return out
-    for d in sorted(runs_dir.iterdir(), reverse=True):
+    try:
+        dirs = [d for d in runs_dir.iterdir() if d.is_dir()]
+    except Exception:
+        return out
+    # 按 mtime 倒序，先取 limit 个再加载 run.yaml（大历史目录不全量解析）
+    def _mtime(d: Path) -> float:
+        try:
+            return d.stat().st_mtime
+        except Exception:
+            return 0.0
+    dirs = sorted(dirs, key=_mtime, reverse=True)
+    if limit is not None:
+        dirs = dirs[: max(0, limit)]
+    for d in dirs:
         f = d / "run.yaml"
         if not f.is_file():
             continue
@@ -34,11 +47,15 @@ def _run_summaries(root: Path) -> list[dict]:
         except Exception:
             continue
         scs = rec.get("scenarios") or []
+        pass_n = sum(1 for s in scs if s.get("passed"))
+        fail_n = sum(1 for s in scs if not s.get("passed") and s.get("error_class") in ("assertion", "config"))
+        blocked_n = len(scs) - pass_n - fail_n
         out.append({
             "run_id": rec.get("run_id", d.name),
             "created_at": rec.get("created_at"),
-            "pass_n": sum(1 for s in scs if s.get("passed")),
-            "fail_n": sum(1 for s in scs if not s.get("passed")),
+            "pass_n": pass_n,
+            "fail_n": fail_n,
+            "blocked_n": blocked_n,
             "scenarios": [
                 {
                     "name": s.get("name"), "file": s.get("file"),
@@ -94,6 +111,8 @@ def setup(app):
             """为指定项目起独立端口子服务，返回可打开的 URL。"""
             import socket
 
+            if len(reg.list_projects()) >= 50:
+                raise HTTPException(429, "注册项目已达上限 50")
             p = Path(str(body.get("path", ""))).resolve()
             if str(p) not in {x["path"] for x in reg.list_projects()}:
                 raise HTTPException(404, "未注册的项目")
@@ -183,12 +202,13 @@ def setup(app):
 
     @r.get("/runs")
     def runs(limit: int = 20):
-        return _run_summaries(root())[:limit]
+        return _run_summaries(root(), limit=limit)
 
     @r.get("/runs/{run_id}/report")
     def run_report(run_id: str):
-        p = root() / "reports" / "runs" / run_id / "report.html"
-        if not p.is_file():
+        base = (root() / "reports" / "runs").resolve()
+        p = (base / run_id / "report.html").resolve()
+        if not p.is_file() or not p.is_relative_to(base):
             raise HTTPException(404, run_id)
         return FileResponse(p)
 
@@ -198,7 +218,13 @@ def setup(app):
         p = (base / name).resolve()
         if not p.is_file() or not p.is_relative_to(base):
             raise HTTPException(404, name)
-        return FileResponse(p)
+        return FileResponse(
+            p,
+            headers={
+                "X-Content-Type-Options": "nosniff",
+                "Content-Security-Policy": "sandbox",
+            },
+        )
 
     # ---------- 配置 ----------
 
@@ -209,10 +235,18 @@ def setup(app):
 
     @r.put("/environments")
     def put_environments(body: dict):
+        raw = body.get("raw")
+        if not isinstance(raw, str):
+            raise HTTPException(400, "缺少 raw 字段")
+        try:
+            data = yaml.safe_load(raw)  # 语法门禁
+        except yaml.YAMLError as e:
+            raise HTTPException(422, f"YAML 解析失败: {e}")
+        if data is not None and not isinstance(data, dict):
+            raise HTTPException(400, "environments 顶层须为映射")
         f = root() / "config" / "environments.yaml"
-        yaml.safe_load(body["raw"])  # 语法门禁
         f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(body["raw"], encoding="utf-8")
+        f.write_text(raw, encoding="utf-8")
         return {"ok": True}
 
     @r.get("/modules")
@@ -222,10 +256,18 @@ def setup(app):
 
     @r.put("/modules")
     def put_modules(body: dict):
+        raw = body.get("raw")
+        if not isinstance(raw, str):
+            raise HTTPException(400, "缺少 raw 字段")
+        try:
+            data = yaml.safe_load(raw)
+        except yaml.YAMLError as e:
+            raise HTTPException(422, f"YAML 解析失败: {e}")
+        if data is not None and not isinstance(data, dict):
+            raise HTTPException(400, "modules 顶层须为映射")
         f = root() / "config" / "modules.yaml"
-        yaml.safe_load(body["raw"])
         f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(body["raw"], encoding="utf-8")
+        f.write_text(raw, encoding="utf-8")
         return {"ok": True}
 
     # ---------- 定时任务 ----------

@@ -69,11 +69,16 @@ def next_run_of(t: dict) -> str | None:
         return None
     try:
         if t.get("daily_at"):
-            h, m = str(t["daily_at"]).split(":")
-            trigger = CronTrigger(hour=int(h), minute=int(m))
+            parts = str(t["daily_at"]).split(":")
+            if len(parts) != 2:
+                return None
+            h, m = int(parts[0]), int(parts[1])
+            if not (0 <= h < 24 and 0 <= m < 60):
+                return None
+            trigger = CronTrigger(hour=h, minute=m)
         else:
             trigger = CronTrigger.from_crontab(str(t["cron"]))
-    except (ValueError, KeyError):
+    except (ValueError, KeyError, AttributeError, TypeError):
         return None
     from datetime import datetime, timezone
 
@@ -85,9 +90,17 @@ def cron_trigger_of(t: dict) -> CronTrigger | None:
     if not t.get("enabled"):
         return None
     if t.get("daily_at"):
-        h, m = str(t["daily_at"]).split(":")
-        return CronTrigger(hour=int(h), minute=int(m))
+        try:
+            parts = str(t["daily_at"]).split(":")
+            if len(parts) != 2:
+                return None
+            h, m = int(parts[0]), int(parts[1])
+            if not (0 <= h < 24 and 0 <= m < 60):
+                return None
+            return CronTrigger(hour=h, minute=m)
+        except (ValueError, KeyError, AttributeError, TypeError):
+            return None
     try:
         return CronTrigger.from_crontab(str(t["cron"]))
-    except ValueError:
+    except (ValueError, KeyError, AttributeError, TypeError):
         return None

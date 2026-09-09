@@ -106,10 +106,7 @@ class Runner:
                 if sc.data:
                     import yaml as _yaml
 
-                    fx = Path(sc.data)
-                    if not fx.exists():
-                        fx = self.scenarios_root.parent / sc.data
-                    if not fx.exists():
+                    def _config_fail(msg: str):
                         result = ScenarioResult(
                             scenario=sc,
                             passed=False,
@@ -118,7 +115,7 @@ class Runner:
                                 StepResult(
                                     f"fixtures:{sc.data}",
                                     False,
-                                    f"fixture 文件不存在: {sc.data}",
+                                    msg,
                                     error_class="config",
                                 )
                             ],
@@ -127,10 +124,29 @@ class Runner:
                         report.results.append(result)
                         if on_result:
                             on_result(result)
+
+                    fx = Path(sc.data)
+                    if not fx.is_absolute():
+                        fx = self.scenarios_root.parent / sc.data
+                    try:
+                        fx_resolved = fx.resolve()
+                        root_resolved = self.scenarios_root.parent.resolve()
+                    except Exception as e:
+                        _config_fail(f"fixture 路径非法: {sc.data}（{e}）")
                         continue
-                    variables.update(
-                        _yaml.safe_load(fx.read_text(encoding="utf-8")) or {}
-                    )
+                    if not fx_resolved.is_relative_to(root_resolved):
+                        _config_fail(f"fixture 越界已拒绝: {sc.data}")
+                        continue
+                    if not fx_resolved.is_file():
+                        _config_fail(f"fixture 文件不存在: {sc.data}")
+                        continue
+                    try:
+                        variables.update(
+                            _yaml.safe_load(fx_resolved.read_text(encoding="utf-8")) or {}
+                        )
+                    except Exception as e:
+                        _config_fail(f"fixture 解析失败: {sc.data}（{e}）")
+                        continue
                 t0 = time.perf_counter()
                 result = self._run_one(ApiExecutor(client, variables), sc)
                 result.duration_ms = int((time.perf_counter() - t0) * 1000)

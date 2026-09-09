@@ -732,11 +732,14 @@ def console_cmd(
     port: int = typer.Option(8900, help="监听端口"),
     g: bool = typer.Option(False, "--global", "-g", help="全局聚合模式"),
     project_root: Path = typer.Option(None, help="项目根目录（默认当前目录）"),
+    token: str = typer.Option(None, help="控制台鉴权口令（或环境变量 ATK_CONSOLE_TOKEN）"),
+    job_timeout: float = typer.Option(300.0, help="单任务超时秒数"),
 ):
     """启动 Web 控制台（本机 127.0.0.1）。"""
     from .console import serve
 
-    serve(port=port, global_mode=g, project_root=project_root)
+    serve(port=port, global_mode=g, project_root=project_root,
+          token=token, job_timeout=job_timeout)
 
 
 def main():

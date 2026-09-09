@@ -11,16 +11,31 @@ class BusyError(Exception):
 
 
 class _Job:
-    def __init__(self, argv: list[str], cwd: str | None):
+    def __init__(self, argv: list[str], cwd: str | None, timeout: float = 300.0, max_events: int = 1000):
         self.id = uuid.uuid4().hex[:12]
-        self.events: deque[dict] = deque()
+        self.events: deque[dict] = deque(maxlen=max_events)
         self.done = False
         self.exit_code: int | None = None
+        self.timeout = timeout
         self.proc = subprocess.Popen(
             argv, cwd=cwd,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         )
         threading.Thread(target=self._pump, daemon=True).start()
+        threading.Thread(target=self._watchdog, daemon=True).start()
+
+    def _watchdog(self):
+        if threading.Event().wait(self.timeout):
+            return
+        if not self.done:
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+            try:
+                self.events.append({"type": "log", "line": f"[job] 超时 {self.timeout}s 已终止"})
+            except Exception:
+                pass
 
     def _pump(self):
         assert self.proc.stdout
@@ -35,13 +50,15 @@ class _Job:
 class JobManager:
     """单槽：同时只允许一个执行任务（本机单人足够）。"""
 
-    def __init__(self):
+    def __init__(self, timeout: float = 300.0, max_events: int = 1000):
         self._current: _Job | None = None
+        self.timeout = timeout
+        self.max_events = max_events
 
     def start(self, argv: list[str], cwd: str | None = None) -> str:
         if self._current is not None and not self._current.done:
             raise BusyError("已有任务在执行，请等待完成")
-        job = _Job(argv, cwd)
+        job = _Job(argv, cwd, timeout=self.timeout, max_events=self.max_events)
         self._current = job
         return job.id
 
