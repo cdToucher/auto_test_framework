@@ -714,18 +714,31 @@ def init(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         created.append(str(path))
-    # Agent 工作流 skill：包内单一源，按布局装到目标项目（只建缺失，绝不覆盖）
+    # Agent 工作流 skill：包内单一源，按布局装到目标项目（只建缺失，绝不覆盖）。
+    # 先一次性预加载：任一缺失直接 exit 1，避免 config 已建、skill 写一半。
+    try:
+        skills_root = res.files("atk.skills")
+        skill_names = sorted(
+            p.name for p in skills_root.iterdir() if (p / "SKILL.md").is_file()
+        )
+        skill_texts = {
+            name: (skills_root / name / "SKILL.md").read_text(encoding="utf-8")
+            for name in skill_names
+        }
+    except Exception as e:
+        typer.secho(f"skill 资源缺失，init 中止：{e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    if not skill_texts:
+        typer.secho("skill 资源为空，init 中止", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
     for layout in ("skills", ".claude/skills"):
-        for name in ("atk-smoke", "atk-gen"):
+        for name, text in skill_texts.items():
             dest = root / layout / name / "SKILL.md"
             if dest.exists():
                 skipped.append(str(dest))
                 continue
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(
-                (res.files("atk.skills") / name / "SKILL.md").read_text(encoding="utf-8"),
-                encoding="utf-8",
-            )
+            dest.write_text(text, encoding="utf-8")
             created.append(str(dest))
     for p in created:
         typer.echo(f"创建 {p}")

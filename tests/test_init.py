@@ -1,8 +1,16 @@
-import os
+import importlib.resources as res
 
 from typer.testing import CliRunner
 
 from atk.cli import app
+
+LAYOUTS = ("skills", ".claude/skills")
+
+
+def _skill_names() -> list[str]:
+    return sorted(
+        p.name for p in res.files("atk.skills").iterdir() if (p / "SKILL.md").is_file()
+    )
 
 
 def test_init_creates_scaffold(tmp_path, monkeypatch):
@@ -33,8 +41,9 @@ def test_init_installs_skills(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     r = CliRunner().invoke(app, ["init"])
     assert r.exit_code == 0, r.output
-    for layout in ("skills", ".claude/skills"):
-        for name in ("atk-smoke", "atk-gen"):
+    assert _skill_names(), "包内 skill 为空"
+    for layout in LAYOUTS:
+        for name in _skill_names():
             p = tmp_path / layout / name / "SKILL.md"
             assert p.exists(), p
             assert "atk" in p.read_text(encoding="utf-8")
@@ -42,26 +51,30 @@ def test_init_installs_skills(tmp_path, monkeypatch):
 
 def test_init_never_overwrites_skills(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    mine = tmp_path / "skills" / "atk-gen" / "SKILL.md"
-    mine.parent.mkdir(parents=True)
-    mine.write_text("mine", encoding="utf-8")
+    mine: list = []
+    for layout in LAYOUTS:
+        for name in _skill_names():
+            p = tmp_path / layout / name / "SKILL.md"
+            p.parent.mkdir(parents=True)
+            p.write_text("mine", encoding="utf-8")
+            mine.append(p)
     r = CliRunner().invoke(app, ["init"])
     assert r.exit_code == 0
-    assert mine.read_text(encoding="utf-8") == "mine"
+    for p in mine:
+        assert p.read_text(encoding="utf-8") == "mine", p
 
 
 def test_skill_copies_in_sync():
     """包内 canonical 与仓库两处副本内容一致（单源多投，改一处必须同步）。"""
-    import importlib.resources as res
     from pathlib import Path
 
     repo = Path(__file__).resolve().parent.parent
-    for name in ("atk-smoke", "atk-gen"):
+    for name in _skill_names():
         canon = (res.files("atk.skills") / name / "SKILL.md").read_text(encoding="utf-8")
         for copy in (
             repo / "skills" / name / "SKILL.md",
             repo / ".claude" / "skills" / name / "SKILL.md",
         ):
-            if copy.exists():
-                assert copy.read_text(encoding="utf-8") == canon, copy
+            assert copy.exists(), f"副本缺失: {copy}"
+            assert copy.read_text(encoding="utf-8") == canon, copy
         assert "atk smoke" in canon or "atk context" in canon
