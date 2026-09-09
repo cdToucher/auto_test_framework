@@ -7,3 +7,4 @@ reports/
 .pytest_cache/
 
 console-ui/node_modules/
+uv.lock
