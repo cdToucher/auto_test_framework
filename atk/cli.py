@@ -1,5 +1,6 @@
 """atk 命令行入口。"""
 import datetime as dt
+import importlib.resources as res
 import json
 from collections import Counter
 from collections.abc import Callable
@@ -713,6 +714,19 @@ def init(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         created.append(str(path))
+    # Agent 工作流 skill：包内单一源，按布局装到目标项目（只建缺失，绝不覆盖）
+    for layout in ("skills", ".claude/skills"):
+        for name in ("atk-smoke", "atk-gen"):
+            dest = root / layout / name / "SKILL.md"
+            if dest.exists():
+                skipped.append(str(dest))
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(
+                (res.files("atk.skills") / name / "SKILL.md").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            created.append(str(dest))
     for p in created:
         typer.echo(f"创建 {p}")
     for p in skipped:

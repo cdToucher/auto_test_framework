@@ -100,7 +100,7 @@ atk init        # 只建缺失文件，绝不覆盖：config/、scenarios/、fix
 
 | 命令 | 作用 | 常用示例 | 退出码 |
 |---|---|---|---|
-| `atk init` | 建骨架 | `atk init` | 0 |
+| `atk init` | 建骨架（含 Agent skill：`skills/` + `.claude/skills/`，只建缺失） | `atk init` | 0 |
 | `atk validate` | 场景合法性+重名告警，提交前自查 | `atk validate` | 0 通过 / 1 有错误 |
 | `atk context` | 输出变更上下文包（提交+补丁+模块+现有场景），供 Agent 起草 | `atk context --base main --context-out /tmp/ctx.md` | 0（含无变更）/ 2 git 错误 |
 | `atk plan` | 建运行记录，输出复用清单 | `atk plan --base main --head HEAD` | 0 |
