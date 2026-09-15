@@ -72,7 +72,12 @@ def rebuild_index(db: Path | None = None) -> int:
             scs = rec.get("scenarios") or []
             pass_n = sum(1 for s in scs if s.get("passed"))
             fail_n = sum(1 for s in scs if not s.get("passed") and s.get("error_class") in ("assertion", "config"))
-            blocked_n = len(scs) - pass_n - fail_n
+            blocked_n = sum(
+                1
+                for s in scs
+                if not s.get("passed")
+                and s.get("error_class") not in ("assertion", "config", "ui_pending", "skipped")
+            )
             entries.append((
                 rec.get("run_id", d.name), proj["path"], rec.get("created_at"),
                 rec.get("status", ""), pass_n,

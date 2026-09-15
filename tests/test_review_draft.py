@@ -36,6 +36,29 @@ def test_approve_strips_tag_and_logs(tmp_path, monkeypatch):
     assert log[-1]["by"] == "qa" and log[-1]["verdict"] == "approve"
 
 
+def test_approve_preserves_nested_tags_field(tmp_path, monkeypatch):
+    """转正只应删除场景 tags，不能改写 API body 的业务数据。"""
+    monkeypatch.chdir(tmp_path)
+    f = tmp_path / "scenarios" / "demo" / "gen-nested-tags.yaml"
+    f.parent.mkdir(parents=True)
+    f.write_text(
+        "scenario: 嵌套标签\n"
+        "tags: [ai-generated]\n"
+        "steps:\n"
+        "  - api:\n"
+        "      call: 'POST /events'\n"
+        "      body:\n"
+        "        tags: [ai-generated]\n",
+        encoding="utf-8",
+    )
+
+    r = runner.invoke(app, ["review-draft", str(f), "--by", "qa", "--verdict", "approve"])
+    assert r.exit_code == 0, r.output
+    data = yaml.safe_load(f.read_text(encoding="utf-8"))
+    assert "tags" not in data
+    assert data["steps"][0]["api"]["body"]["tags"] == ["ai-generated"]
+
+
 def test_approve_non_draft_exits_2(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     f = tmp_path / "scenarios" / "demo" / "normal.yaml"

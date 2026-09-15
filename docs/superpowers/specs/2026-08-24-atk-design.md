@@ -3,6 +3,12 @@
 日期：2026-08-24
 状态：待评审
 
+> **实现状态提示（2026-09-11）**：本文是设计蓝图，部分组件尚未落地。
+> AI 与使用者请以 `atk --help` 的实际命令为准，不要按本文调用不存在的命令：
+> - 未实现：`planner/`、`solidify/` 模块（YAML→Playwright 固化、自修复）、`atk doctor`、`atk export`
+> - `ui:` 步骤 `atk run` 不执行，标记为「待实测」，由 AI 浏览器实测后 `atk record` 回填
+> 已落地的能力见 README 与 `docs/USAGE.md`。
+
 ## 1. 背景与目标
 
 ### 问题

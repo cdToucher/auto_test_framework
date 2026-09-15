@@ -73,9 +73,11 @@ class ApiExecutor:
                 expectations.append(
                     ApiExpect(
                         status=e.status,
+                        status_op=e.status_op,
                         path=substitute(e.path, self.variables) if e.path else e.path,
                         op=e.op,
                         value=substitute(e.value, self.variables),
+                        raw=substitute(e.raw, self.variables) if e.raw else e.raw,
                     )
                 )
         except Exception as e:

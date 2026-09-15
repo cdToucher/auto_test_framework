@@ -20,5 +20,6 @@
 import { ref } from 'vue'
 
 const isGlobal = ref(false)
+
 fetch('/api/health').then(r => r.json()).then(j => { isGlobal.value = !!j.global })
 </script>

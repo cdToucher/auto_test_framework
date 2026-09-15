@@ -23,6 +23,7 @@
             style="width: 220px" placeholder="回车添加">
           </el-select>
         </el-form-item>
+        <el-form-item label="Fixtures"><el-input v-model="form.data" style="width: 220px" placeholder="fixtures/order.yaml" /></el-form-item>
       </el-form>
 
       <h4>步骤（拖拽排序）</h4>
@@ -60,13 +61,17 @@
                 <el-table-column label="操作符" width="110">
                   <template #default="{ row }">
                     <el-select v-model="row.op">
-                      <el-option value="eq" label="等于" /><el-option value="not_null" label="非空" />
+                      <el-option v-for="option in expectOps" :key="option.value"
+                        :value="option.value" :label="option.label"
+                        :disabled="row.key.trim() === 'status' && nullaryOps.includes(option.value)" />
+                      <el-option v-if="!expectOps.some(option => option.value === row.op)"
+                        :value="row.op" :label="`未知：${row.op}`" />
                     </el-select>
                   </template>
                 </el-table-column>
                 <el-table-column label="期望值" min-width="140">
                   <template #default="{ row }">
-                    <el-input v-model="row.value" :disabled="row.op === 'not_null'" />
+                    <el-input v-model="row.value" :disabled="nullaryOps.includes(row.op)" placeholder="字符串或 JSON" />
                   </template>
                 </el-table-column>
                 <el-table-column width="60">
@@ -129,65 +134,136 @@ const loading = ref(true)
 const mode = ref('form')
 const saving = ref(false)
 const mtime = ref(0)
-const form = ref({ scenario: '', module: '', priority: 'P1', env: '', tags: [] })
+const form = ref({ scenario: '', module: '', priority: 'P1', env: '', tags: [], data: '' })
 const steps = ref([])
 const yamlText = ref('')
+const rawScenario = ref({})
 let keySeq = 0
 
-const kvToRows = (o) => Object.entries(o || {}).map(([k, v]) => ({ k: String(k), v: typeof v === 'string' ? v : JSON.stringify(v) }))
+const expectOps = [
+  { value: 'eq', label: '等于' }, { value: 'ne', label: '不等于' },
+  { value: 'lt', label: '小于' }, { value: 'lte', label: '小于等于' },
+  { value: 'gt', label: '大于' }, { value: 'gte', label: '大于等于' },
+  { value: 'contains', label: '包含' }, { value: 'not_contains', label: '不包含' },
+  { value: 'regex', label: '正则' }, { value: 'len', label: '长度' },
+  { value: 'type', label: '类型' }, { value: 'in', label: '属于' },
+  { value: 'not_in', label: '不属于' }, { value: 'startswith', label: '开头匹配' },
+  { value: 'endswith', label: '结尾匹配' }, { value: 'not_null', label: '非空' },
+  { value: 'is_null', label: '为空' },
+]
+const nullaryOps = ['not_null', 'is_null']
+const symbolOps = { '==': 'eq', '!=': 'ne', '<': 'lt', '<=': 'lte', '>': 'gt', '>=': 'gte' }
+
+const clone = (value) => JSON.parse(JSON.stringify(value || {}))
+const kvToRows = (o) => Object.entries(o || {}).map(([k, v]) => ({
+  k: String(k), v: typeof v === 'string' ? v : JSON.stringify(v), _valueType: typeof v,
+}))
 const rowsToKv = (rows) => {
   const o = {}
-  for (const r of rows || []) if (r.k !== '') o[r.k] = coerce(r.v)
+  for (const r of rows || []) {
+    if (r.k === '') continue
+    // 既有字符串保持字符串，避免 "true"、"001" 等看似 JSON 的值被无意改型。
+    o[r.k] = r._valueType === 'string' ? r.v : coerce(r.v)
+  }
   return o
 }
 const coerce = (s) => { try { return JSON.parse(s) } catch { return s } }
+const showValue = (value) => typeof value === 'string' ? value : JSON.stringify(value)
+const normalizeOp = (op) => symbolOps[String(op || '').trim()] || String(op || 'eq').trim()
+
+function parseExpectValue(value) {
+  if (typeof value !== 'string') return { op: 'eq', value }
+  if (value.startsWith('\\')) return { op: 'eq', value: value.slice(1) }
+  const trimmed = value.trim()
+  if (nullaryOps.includes(trimmed)) return { op: trimmed, value: null }
+  const symbol = value.match(/^\s*(<=|>=|!=|==|<|>)\s*(.*)$/s)
+  if (symbol) return { op: symbolOps[symbol[1]], value: symbol[2].trim() }
+  const keyword = value.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/s)
+  if (!keyword || !expectOps.some(option => option.value === keyword[1])) return { op: 'eq', value }
+  const op = keyword[1]
+  const rest = keyword[2].trim()
+  if (op === 'in' || op === 'not_in') {
+    const inner = rest.startsWith('[') && rest.endsWith(']') ? rest.slice(1, -1) : rest
+    return { op, value: inner.trim() ? inner.split(',').map(item => coerce(item.trim())) : [] }
+  }
+  if (op === 'len' && rest.includes('..')) {
+    const [min, max] = rest.split('..', 2)
+    return { op, value: { min: coerce(min), max: coerce(max) } }
+  }
+  return { op, value: op === 'len' ? coerce(rest) : rest }
+}
+
+function expectToRows(expect) {
+  if (Array.isArray(expect)) {
+    return expect.map((item) => {
+      const isStatus = Object.prototype.hasOwnProperty.call(item || {}, 'status')
+      const rawValue = isStatus ? item.status : item?.value
+      const parsed = item?.op == null ? parseExpectValue(rawValue) : { op: normalizeOp(item.op), value: rawValue }
+      return {
+        key: isStatus ? 'status' : String(item?.path || ''), op: parsed.op,
+        value: parsed.value == null ? '' : showValue(parsed.value), _valueType: typeof parsed.value,
+      }
+    })
+  }
+  return Object.entries(expect || {}).map(([key, value]) => {
+    const parsed = parseExpectValue(value)
+    return {
+      key, op: parsed.op, value: parsed.value == null ? '' : showValue(parsed.value),
+      _valueType: typeof parsed.value,
+    }
+  })
+}
+
+function rowsToExpect(rows) {
+  return (rows || []).filter(row => row.key.trim()).map((row) => {
+    const op = normalizeOp(row.op)
+    const value = row._valueType === 'string' ? row.value : coerce(row.value)
+    if (row.key.trim() === 'status') return { status: value, op }
+    const rule = { path: row.key.trim(), op }
+    if (!nullaryOps.includes(op)) rule.value = value
+    return rule
+  })
+}
 
 function stepToView(raw) {
   if (raw.api) {
     const a = raw.api
     const [method, ...rest] = String(a.call || '').split(' ')
-    const expectMap = {}
-    for (const [k, v] of Object.entries(a.expect || {})) {
-      if (k === 'status') expectMap.status = String(v)
-      else expectMap[k] = v === 'not_null' ? '__NOT_NULL__' : String(v)
-    }
     return {
-      _key: ++keySeq, _type: 'api',
+      _key: ++keySeq, _type: 'api', _raw: clone(a),
       method: method || 'GET', url: rest.join(' '),
-      headers: kvToRows(a.headers), bodyText: a.body ? JSON.stringify(a.body, null, 0) : '',
-      expectRows: Object.entries(expectMap).map(([k, v]) => ({
-        key: k, op: v === '__NOT_NULL__' ? 'not_null' : 'eq', value: v === '__NOT_NULL__' ? '' : v,
-      })),
+      headers: kvToRows(a.headers), bodyText: a.body !== undefined && a.body !== null ? JSON.stringify(a.body, null, 0) : '',
+      expectRows: expectToRows(a.expect),
       captureRows: kvToRows(a.capture), retries: a.retries ?? 1,
     }
   }
   const u = raw.ui || {}
-  return { _key: ++keySeq, _type: 'ui', action: u.action || '', target: u.target || u.url || '', value: u.value || '', expect: u.expect || '' }
+  const targetKey = Object.prototype.hasOwnProperty.call(u, 'target') ? 'target' : 'url'
+  return { _key: ++keySeq, _type: 'ui', _raw: clone(u), targetKey, action: u.action || '', target: u[targetKey] || '', value: u.value || '', expect: u.expect || '' }
 }
 
 function viewToStep(st) {
   if (st._type === 'api') {
-    const expect = {}
-    for (const r of st.expectRows) {
-      if (r.key === '') continue
-      if (r.key === 'status') expect.status = Number(r.value)
-      else expect[r.key] = r.op === 'not_null' ? 'not_null' : coerce(r.value)
-    }
+    const api = clone(st._raw)
+    api.call = `${st.method} ${st.url}`.trim()
+    api.headers = rowsToKv(st.headers)
+    if (st.bodyText.trim()) api.body = coerce(st.bodyText)
+    else delete api.body
+    api.expect = rowsToExpect(st.expectRows)
+    api.capture = rowsToKv(st.captureRows)
+    api.retries = st.retries ?? 1
     return {
-      api: {
-        call: `${st.method} ${st.url}`.trim(),
-        headers: rowsToKv(st.headers),
-        ...(st.bodyText.trim() ? { body: coerce(st.bodyText) } : {}),
-        expect,
-        capture: rowsToKv(st.captureRows),
-        retries: st.retries ?? 1,
-      },
+      api,
     }
   }
-  const ui = { action: st.action }
-  if (st.target) ui.target = st.target
+  const ui = clone(st._raw)
+  ui.action = st.action
+  if (st.target) ui[st.targetKey] = st.target
+  else delete ui[st.targetKey]
   if (st.value) ui.value = st.value
+  else delete ui.value
   if (st.expect) ui.expect = st.expect
+  else delete ui.expect
   return { ui }
 }
 
@@ -204,12 +280,7 @@ async function load() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ data: d.data }),
     }).then(r => r.json())).raw
-    form.value = {
-      scenario: d.data.scenario || '', module: d.data.module || '',
-      priority: d.data.priority || 'P1', env: d.data.env || '',
-      tags: d.data.tags || [],
-    }
-    steps.value = (d.data.steps || []).map(stepToView)
+    hydrate(d.data)
   } catch (e) {
     ElMessage.error(String(e.message || e))
     mode.value = 'yaml'
@@ -218,31 +289,42 @@ async function load() {
 }
 
 function buildData() {
-  const d = {
-    scenario: form.value.scenario,
-    module: form.value.module || 'default',
-    priority: form.value.priority,
-    tags: form.value.tags,
-    env: form.value.env || 'local',
-    steps: steps.value.map(viewToStep),
-  }
+  const d = clone(rawScenario.value)
+  d.scenario = form.value.scenario
+  d.priority = form.value.priority
+  d.tags = [...form.value.tags]
+  if (form.value.module.trim()) d.module = form.value.module.trim()
+  else delete d.module
+  if (form.value.env.trim()) d.env = form.value.env.trim()
+  else delete d.env
+  if (form.value.data.trim()) d.data = form.value.data.trim()
+  else delete d.data
+  d.steps = steps.value.map(viewToStep)
   return d
+}
+
+function hydrate(data) {
+  rawScenario.value = clone(data)
+  form.value = {
+    scenario: data.scenario || '', module: data.module || '',
+    priority: data.priority || 'P1', env: data.env || '', tags: data.tags || [],
+    data: data.data || '',
+  }
+  steps.value = (data.steps || []).map(stepToView)
 }
 
 async function toYamlMode() {
   if (mode.value === 'yaml') {
+    const data = buildData()
+    rawScenario.value = clone(data)
     const r = await fetch('/api/render', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data: buildData() }),
+      body: JSON.stringify({ data }),
     })
     yamlText.value = (await r.json()).raw
   } else {
     const r = await api.parse(yamlText.value)
-    form.value = {
-      scenario: r.data.scenario || '', module: r.data.module || '',
-      priority: r.data.priority || 'P1', env: r.data.env || '', tags: r.data.tags || [],
-    }
-    steps.value = (r.data.steps || []).map(stepToView)
+    hydrate(r.data)
   }
 }
 

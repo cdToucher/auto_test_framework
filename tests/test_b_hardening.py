@@ -85,31 +85,21 @@ def test_b3_absolute_fixture_outside_root_is_config(tmp_path: Path, mock_base_ur
 
 
 # ---------- B4 ----------
-def test_b4_token_auth(tmp_path: Path):
-    from atk.console import create_app
-    c = TestClient(create_app(project_root=tmp_path, token="s3cret"))
-    assert c.get("/api/health").status_code == 401
-    assert c.get("/api/health", headers={"X-Auth-Token": "wrong"}).status_code == 401
-    assert c.get("/api/health", headers={"X-Auth-Token": "s3cret"}).status_code == 200
-
-
-def test_b4_no_token_open(tmp_path: Path):
+def test_b4_loopback_console_is_open(tmp_path: Path):
     from atk.console import create_app
     c = TestClient(create_app(project_root=tmp_path))
     assert c.get("/api/health").status_code == 200
 
 
-def test_b4_cli_has_token_option_and_env():
+def test_b4_console_has_no_auth_token_option():
     import inspect
-    import os
     from atk import cli
-    from atk.console import serve
-    assert "token" in inspect.signature(cli.console_cmd).parameters
-    assert "token" in inspect.signature(serve).parameters
-    src = inspect.getsource(serve)
-    assert "ATK_CONSOLE_TOKEN" in src
-    src2 = inspect.getsource(create_app_fn := __import__("atk.console", fromlist=["create_app"]).create_app)
-    assert "token" in inspect.signature(create_app_fn).parameters
+    from atk.console import create_app, serve
+
+    assert "token" not in inspect.signature(cli.console_cmd).parameters
+    assert "token" not in inspect.signature(serve).parameters
+    assert "token" not in inspect.signature(create_app).parameters
+    assert 'host="127.0.0.1"' in inspect.getsource(serve)
 
 
 # ---------- B5 ----------
@@ -316,6 +306,8 @@ def test_b9_registry_blocked_semantics(tmp_path: Path):
         "- name: b\n  passed: false\n  error_class: assertion\n"
         "- name: c\n  passed: false\n  error_class: environment\n",
         encoding="utf-8")
+    with (rd / "run.yaml").open("a", encoding="utf-8") as f:
+        f.write("- name: d\n  passed: false\n  error_class: ui_pending\n")
     reg.upsert_project(proj, db=db)
     assert reg.rebuild_index(db=db) == 1
     import sqlite3

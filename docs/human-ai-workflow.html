@@ -34,7 +34,7 @@ li{margin:5px 0}
 <p class="lead">本文说明当前项目应该如何被人和 AI 一起使用。核心原则是：<b>人只做业务判断，AI 负责流程推进，atk 负责确定性记录和门禁</b>。</p>
 
 <div class="note">
-<b>当前边界：</b>atk 当前已经支持 API 场景确定性执行、变更上下文、运行记录、报告和 gate。<code>ui:</code> 步骤可以写入 YAML，但 <code>atk run</code> 内部尚未真正执行 UI；UI/E2E 由 AI 使用浏览器工具实测后，通过 <code>atk record --from-json</code> 回填证据。
+<b>当前边界：</b>atk 当前已经支持 API 场景确定性执行、变更上下文、运行记录、报告和 gate（含 UI 未回填拦截）。<code>ui:</code> 步骤可以写入 YAML，但 <code>atk run</code> 内部尚未真正执行 UI，只标记为「待实测」；UI/E2E 由 AI 使用浏览器工具实测后，通过 <code>atk record --last --from-json</code> 回填证据。<code>atk console</code> 仅供本机回环访问，不需要登录口令；被测服务凭据由环境变量注入。
 实际本地 dogfood 示例见 <a href="spa-shop-dogfood.html">SPA Shop Dogfood 全流程</a>。
 </div>
 
@@ -70,13 +70,13 @@ li{margin:5px 0}
   -> AI review
   -> 人工 review（可选）
   -> AI test（当前项目）
-      - atk context/plan 拿确定性上下文
-      - AI 起草 API/E2E 场景
-      - 人审 expect
-      - atk run 执行 API/YAML 回归
-      - AI 浏览器实测 UI/E2E intent
-      - atk record 回填证据
-      - atk report/gate 输出结论
+      - atk smoke 建单并执行已有场景（plan -> run -> report -> gate）
+      - 无覆盖时 atk context + AI 起草 API/E2E 草稿
+      - 人审 expect，atk review-draft 转正或驳回
+      - atk smoke 重新执行转正后的场景，产出当前 run 记录
+      - AI 浏览器实测 UI/E2E intent，atk record --last 回填证据
+      - 人做整单确认，atk review --last 落盘
+      - atk gate --last 输出结论
   -> CI
   -> QA 体系测试
   -> 验收</div>
@@ -109,6 +109,18 @@ modules:
     - "src/order/**"
     - "frontend/src/pages/order/**"</code></pre>
 
+<h3>被测服务凭据与本地控制台</h3>
+<p><code>atk console</code> 固定监听 <code>127.0.0.1</code>，供本机使用，不做登录鉴权。Cookie、token 等是<strong>被测服务</strong>的凭据，应在环境配置中以 <code>${env:VAR}</code> 引用，而不是传给控制台：</p>
+<pre><code># config/environments.yaml
+staging:
+  base_url: "https://staging.example.com"
+  vars:
+    service_cookie: "${env:ATK_SERVICE_COOKIE}"
+    service_token: "${env:ATK_SERVICE_TOKEN}"
+
+# 控制台和它启动的 atk run 都继承这些变量
+ATK_SERVICE_COOKIE="..." ATK_SERVICE_TOKEN="..." atk console</code></pre>
+
 <h2>4. 开发如何使用</h2>
 <p>开发的交互应尽量短。推荐只给 AI 三类信息：要测的需求、基线分支、环境名。</p>
 <div class="card">
@@ -130,7 +142,7 @@ modules:
 <tr>
 <td>2. 整单确认</td>
 <td>看报告里的失败、疑似、受阻、截图证据和 gate 结论。</td>
-<td><code>atk review &lt;run_id&gt; --by &lt;name&gt; --verdict approve|reject</code></td>
+<td><code>atk review --last --by &lt;name&gt; --verdict approve|reject</code></td>
 </tr>
 </table>
 
@@ -141,9 +153,14 @@ modules:
 <h2>5. AI Agent 如何使用</h2>
 <p>AI 的任务是把一次需求或提交推进成结构化测试记录。不要调用不存在的内置生成命令；用 atk 的确定性命令加自己的代码理解能力。</p>
 
-<h3>5.1 获取事实</h3>
-<pre><code>atk context --base main --head HEAD --format json > /tmp/atk-context.json
-atk plan --base main --head HEAD --format json > /tmp/atk-plan.json</code></pre>
+<h3>5.1 先建单，再补事实</h3>
+<pre><code># 默认入口：一次完成 plan -> run -> report -> gate，JSON 只输出最终 manifest
+atk smoke --base main --head HEAD --env staging --title "优惠券下单" --format json \
+  > /tmp/atk-smoke.json
+
+# 只有发现覆盖不足或要起草场景时，再读取确定性上下文
+atk context --base main --head HEAD --format json > /tmp/atk-context.json</code></pre>
+<p><code>smoke</code> 会写入 <code>.atk/last-run.json</code>。AI 应读取它的 <code>failed_scenarios</code>、<code>intents_pending</code> 和 <code>next</code>，而不是从终端输出手工搬运 run_id。<code>atk plan</code> 仍可单独建运行记录，但不是功能验证的默认入口。</p>
 <p>AI 必须读取：</p>
 <ul>
 <li>变更文件和 patch。</li>
@@ -171,6 +188,22 @@ atk plan --base main --head HEAD --format json > /tmp/atk-plan.json</code></pre>
 <li>不得编造不存在的接口、字段或错误码。</li>
 <li>草稿必须带 <code>ai-generated</code> tag。</li>
 </ul>
+
+<div class="note">
+<b>断言能力（别再只断 status）：</b>除相等外，<code>expect</code> 还支持比较、包含、正则、长度、类型、枚举。
+字面量以反斜杠开头可转义。
+<pre><code>expect:
+  status: 200
+  data.orderNo: not_null
+  data.payAmount: "&lt; 90"          # 比较：&lt; &lt;= &gt; &gt;= == !=
+  data.msg: "contains: 成功"        # 包含 / not_contains
+  data.mobile: "regex: ^1[3-9]\\d{9}$"
+  data.items: "len: 3"             # 或 "len: 1..5"
+  data.id: "type: str"
+  data.state: "in: [pending, paid]"
+  data.err: is_null</code></pre>
+复杂值可用列表式：<code>expect: [{ path: data.payAmount, op: lte, value: 90 }]</code>。
+</div>
 
 <pre><code>scenario: 优惠券下单后金额扣减
 module: order
@@ -215,28 +248,33 @@ steps:
       expect: 列表出现该订单，状态为待支付，金额已扣减优惠券</code></pre>
 
 <h3>5.4 校验草稿</h3>
-<pre><code>atk validate
-atk run --env staging --tags ai-generated</code></pre>
+<pre><code># 草稿先做语法与 DSL 校验
+atk validate
+
+# 人确认 expect 后才转正；reject 必须补 --note
+atk review-draft scenarios/order/gen-abc123-1.yaml --by dev --verdict approve
+
+# 转正后重新建单并执行，--last 自动指向这次最新记录
+atk smoke --base main --head HEAD --env staging --title "优惠券下单" --format json</code></pre>
 <p>如果失败，AI 先判断失败类型：</p>
 <table>
 <tr><th>失败类型</th><th>处理</th></tr>
 <tr><td>配置错误</td><td>修正 env、fixture、变量、请求格式。</td></tr>
 <tr><td>环境错误</td><td>记录 blocked 或提示检查环境。</td></tr>
 <tr><td>断言失败</td><td>不要擅自改成 pass；整理证据给人判断。</td></tr>
-<tr><td>UI 未支持</td><td>用浏览器工具实测，并通过 record 回填。</td></tr>
+<tr><td>UI 待实测（<code>ui_pending</code>）</td><td>用项目配置的浏览器工具实测，并通过 <code>record --last</code> 回填；未回填时 gate 拦截。</td></tr>
 </table>
 
 <h2>6. AI 浏览器实测与回填</h2>
-<p>AI 使用浏览器工具完成 UI/E2E intent 后，必须把结论写回 atk 运行记录。</p>
+<p>AI 使用项目配置的浏览器工具（<code>atk init</code> 默认写入 <code>ego-browser</code>）完成 UI/E2E intent 后，必须把结论写回 atk 运行记录。</p>
 <pre><code>{
-  "run_id": "smoke-20260909-153000",
   "title": "页面下单后列表显示待支付",
   "status": "pass",
   "note": "创建订单后在列表查到该订单，状态待支付，金额已扣减优惠券",
   "evidence": ["/tmp/atk-order-list.png"]
 }</code></pre>
 
-<pre><code>atk record smoke-20260909-153000 --from-json /tmp/atk-ui-result.json</code></pre>
+<pre><code>atk record --last --from-json /tmp/atk-ui-result.json</code></pre>
 
 <table>
 <tr><th>status</th><th>何时使用</th><th>要求</th></tr>
@@ -245,42 +283,55 @@ atk run --env staging --tags ai-generated</code></pre>
 <tr><td>suspect</td><td>AI 不确定，疑似问题</td><td>必须带 note，等待人定性，gate 拦截。</td></tr>
 <tr><td>blocked</td><td>登录、权限、环境、服务不可用</td><td>说明阻塞原因，不得标 pass。</td></tr>
 </table>
+<p><code>pending</code> 由含 <code>ui:</code> 步骤的运行自动登记，不能作为 <code>atk record --status</code> 的值；对同名 title 回填会原地更新该 pending 意图。</p>
 
 <h2>7. 完整命令流程</h2>
 <h3>AI 主导，本地/TUI 中执行</h3>
-<pre><code># 1. 建测试单并跑已有确定性场景
-atk smoke --base main --head HEAD --env staging --title "优惠券下单"
+<pre><code># 1. 建测试单并跑已有确定性场景（--format json 只输出 manifest，含 next 建议）
+atk smoke --base main --head HEAD --env staging --title "优惠券下单" --format json
 
 # 2. 如发现缺场景，AI 按 docs/AI_AUTHORING_PROTOCOL.md 起草 YAML
 atk context --base main --head HEAD --format json > /tmp/atk-context.json
-atk plan --base main --head HEAD --format json > /tmp/atk-plan.json
 
-# 3. 校验草稿
+# 3. 校验草稿；人审 expect 后转正或驳回
 atk validate
-atk run --env staging --tags ai-generated
-
-# 4. 人审 expect 后转正或驳回
 atk review-draft scenarios/order/gen-abc123-1.yaml --by dev --verdict approve
 
-# 5. AI 浏览器实测 UI/E2E 后回填
-atk record &lt;run_id&gt; --from-json /tmp/atk-ui-result.json
+# 4. 转正后重新 smoke，得到覆盖草稿的新运行记录
+atk smoke --base main --head HEAD --env staging --title "优惠券下单" --format json
+
+# 5. AI 浏览器实测 UI/E2E 后回填（--last 免拼 run_id）
+atk record --last --from-json /tmp/atk-ui-result.json
 
 # 6. 人做整单确认
-atk review &lt;run_id&gt; --by dev --verdict approve
+atk review --last --by dev --verdict approve
 
 # 7. 输出门禁结论
-atk gate &lt;run_id&gt; --format json
-atk report &lt;run_id&gt;</code></pre>
+atk gate --last --format json
+atk report --last</code></pre>
+
+<div class="note">
+<b>run_id 不必手工搬运：</b><code>plan</code> / <code>smoke</code> / <code>run --record-new</code>
+会把 run_id 写入 <code>.atk/last-run.json</code>，后续 <code>record</code> / <code>report</code> /
+<code>review</code> / <code>gate</code> 一律用 <code>--last</code>；<code>atk last</code> 可查看当前操作对象。
+</div>
+
+<div class="ok">
+<b>UI 步骤不再"必然受阻"：</b><code>atk run</code> 遇到 <code>ui:</code> 步骤会标记为
+<b>待实测</b>（既不计失败也不计受阻，不返回 exit 2），并自动登记为 <code>pending</code> 意图。
+AI 实测后 <code>atk record --last</code> 回填；<b>未回填前 <code>atk gate</code> 拦截</b>。
+门从 run 阶段移到 gate 阶段，既消除误报噪音，也保证"没测过不会说通过"。
+如确需忽略 UI，用 <code>atk run --skip-ui</code>。
+</div>
 
 <h3>CI 中执行</h3>
-<pre><code>atk smoke --base origin/main --head HEAD --env staging --title "$PR_TITLE" \
-  --junit reports/junit.xml
+<pre><code># 推荐：CI 以 smoke 为单一入口；输出为机器可读 manifest
+atk smoke --base origin/main --head HEAD --env staging --title "$PR_TITLE" \
+  --junit reports/junit.xml --format json > reports/atk-smoke.json
 
-# 或分步：
-atk plan --base origin/main --head HEAD --format json > reports/atk-plan.json
-atk run --env staging --record-to "$RUN_ID" --junit reports/junit.xml
-atk report "$RUN_ID"
-atk gate "$RUN_ID" --format json > reports/atk-gate.json</code></pre>
+# UI 待实测、草稿未转正、断言失败或漂移都会让 gate 返回非 0。
+# 无需引用未定义的 $RUN_ID；需要检查当前记录时用：
+atk last --format json</code></pre>
 
 <h2>8. 防漂移规则</h2>
 <div class="warn">
@@ -306,6 +357,6 @@ atk gate "$RUN_ID" --format json > reports/atk-gate.json</code></pre>
 <tr><td><code>docs/ai-test-roadmap.html</code></td><td>后续优化路线图。</td></tr>
 </table>
 
-<p class="small">生成时间：2026-09-09。本文描述当前项目可执行的人机协作方式。</p>
+<p class="small">更新日期：2026-09-15。本文描述当前项目可执行的人机协作方式。</p>
 </body>
 </html>

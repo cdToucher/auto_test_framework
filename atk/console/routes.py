@@ -1,5 +1,6 @@
 """控制台全部路由（原型期单文件）。每次 setup 生成独立 router，避免跨应用闭包污染。"""
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -49,7 +50,12 @@ def _run_summaries(root: Path, limit: int | None = None) -> list[dict]:
         scs = rec.get("scenarios") or []
         pass_n = sum(1 for s in scs if s.get("passed"))
         fail_n = sum(1 for s in scs if not s.get("passed") and s.get("error_class") in ("assertion", "config"))
-        blocked_n = len(scs) - pass_n - fail_n
+        blocked_n = sum(
+            1
+            for s in scs
+            if not s.get("passed")
+            and s.get("error_class") not in ("assertion", "config", "ui_pending", "skipped")
+        )
         out.append({
             "run_id": rec.get("run_id", d.name),
             "created_at": rec.get("created_at"),
@@ -121,7 +127,13 @@ def setup(app):
                 port = s.getsockname()[1]
             argv = [sys.executable, "-m", "atk", "console",
                     "--port", str(port), "--project-root", str(p)]
-            subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(
+                argv,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                # 验证服务凭据通过 environments.yaml 的 ${env:VAR} 在子运行中解析。
+                env=os.environ.copy(),
+            )
             return {"url": f"http://127.0.0.1:{port}"}
 
     @r.get("/tree")

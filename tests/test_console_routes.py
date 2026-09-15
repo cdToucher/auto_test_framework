@@ -77,6 +77,12 @@ def test_validate_endpoint(c):
     import yaml
     good = yaml.safe_load(GOOD)
     assert c.post("/api/validate", json={"data": good}).json()["ok"] is True
+    invalid_expect = dict(good)
+    invalid_expect["steps"] = [{"api": {
+        "call": "GET /orders",
+        "expect": [{"path": "data.id", "op": "unknown", "value": 1}],
+    }}]
+    assert c.post("/api/validate", json={"data": invalid_expect}).json()["ok"] is False
 
 
 def test_path_traversal_blocked(c):
@@ -132,6 +138,21 @@ def test_runs_history_and_evidence(c, proj):
     assert r.status_code == 404
 
 
+def test_runs_history_does_not_count_pending_ui_as_blocked(c, proj):
+    rd = proj / "reports" / "runs" / "pending-ui"
+    rd.mkdir(parents=True)
+    (rd / "run.yaml").write_text(
+        "run_id: pending-ui\ncreated_at: '2026-09-15T00:00:00'\nscenarios:\n"
+        "- name: 页面验证\n  passed: false\n  error_class: ui_pending\n",
+        encoding="utf-8",
+    )
+
+    summary = next(row for row in c.get("/api/runs").json() if row["run_id"] == "pending-ui")
+    assert summary["pass_n"] == 0
+    assert summary["fail_n"] == 0
+    assert summary["blocked_n"] == 0
+
+
 def test_run_endpoint_starts_job(c, proj, monkeypatch):
     class FakeJM:
         def start(self, argv, cwd=None):
@@ -155,6 +176,32 @@ def test_run_endpoint_starts_job(c, proj, monkeypatch):
                 import json
                 events.append(json.loads(line[5:]))
     assert events[-1] == {"type": "done", "exit_code": 0}
+
+
+def test_global_project_child_inherits_target_credentials(tmp_path, monkeypatch):
+    from atk.console import registry
+    from atk.console import routes
+
+    db = tmp_path / "registry.db"
+    monkeypatch.setattr(registry, "DB_PATH", db)
+    project = tmp_path / "project"
+    (project / "scenarios").mkdir(parents=True)
+    registry.upsert_project(project)
+
+    launched = {}
+
+    def fake_popen(argv, **kwargs):
+        launched["argv"] = argv
+        launched["env"] = kwargs["env"]
+
+    monkeypatch.setattr(routes.subprocess, "Popen", fake_popen)
+    monkeypatch.setenv("ATK_XF_TOKEN", "target-service-token")
+    client = TestClient(create_app(project_root=tmp_path, global_mode=True))
+    response = client.post("/api/projects/open", json={"path": str(project)})
+
+    assert response.status_code == 200
+    assert launched["env"]["ATK_XF_TOKEN"] == "target-service-token"
+    assert "--token" not in launched["argv"]
 
 
 def test_config_endpoints(c, proj):

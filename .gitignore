@@ -4,7 +4,9 @@ __pycache__/
 *.egg-info/
 dist/
 reports/
+.atk/
 .pytest_cache/
+.pytest_tmp/
 
 console-ui/node_modules/
 uv.lock

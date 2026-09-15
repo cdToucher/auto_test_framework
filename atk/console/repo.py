@@ -82,7 +82,7 @@ def load_scenario(root: Path, rel: str) -> tuple[dict, int]:
 
 
 def validate_scenario(data: dict) -> list[str]:
-    """轻校验：能被 loader 接受的最小条件。返回错误列表，空即合法。"""
+    """用与 CLI 相同的模型校验场景。返回错误列表，空即合法。"""
     errs = []
     if not isinstance(data, dict) or not data.get("scenario"):
         errs.append("缺少 scenario 字段")
@@ -93,6 +93,14 @@ def validate_scenario(data: dict) -> list[str]:
         for i, s in enumerate(steps):
             if not isinstance(s, dict) or not ({"api", "ui"} & set(s)):
                 errs.append(f"steps[{i}] 缺少 api/ui 键")
+    if errs:
+        return errs
+    try:
+        from ..store.models import Scenario
+
+        Scenario.from_raw(data)
+    except Exception as e:
+        errs.append(str(e))
     return errs
 
 

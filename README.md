@@ -11,14 +11,74 @@
 
 | 命令 | 作用 |
 |---|---|
-| `atk init` | 初始化项目结构（只建缺失文件，绝不覆盖） |
+| `atk init` | 初始化项目结构（只建缺失文件，绝不覆盖）；`--ui-tool` 指定 AI 实测浏览器 |
 | `atk validate` | 场景库合法性校验（错误+重名告警），QA 提交前自查 |
 | `atk context` | 输出确定性变更上下文包（提交记录 + 补丁 + 模块归属），供 Agent 按 atk-authoring 协议起草场景 |
 | `atk plan` | 创建运行记录，输出复用场景清单与待补全意图；支持 `--format json` |
-| `atk run` | 执行场景：HTML 报告 + 可选 JUnit XML + 可并入运行记录 |
+| `atk run` | 执行场景：HTML 报告 + 可选 JUnit XML + 可并入运行记录；`--skip-ui` 跳过 UI 步骤 |
+| `atk smoke` | 一键冒烟：plan→run→report→gate；`--format json` 输出含 `next` 建议的 manifest |
 | `atk record` | Agent 回填 UI 探索意图结论（pass/fail/suspect/blocked + 截图证据），支持 `--from-json` |
 | `atk report` | 渲染运行记录为统一 HTML 报告（含截图缩略） |
-| `atk gate` | 合并门禁：变更一致性 + 用例失败 + 未定性三查；支持 `--format json` |
+| `atk review` | 开发整单确认（approve/reject），仅告警不拦截 |
+| `atk review-draft` | 草稿评审：approve 去 `ai-generated` tag 转正，reject 移走留档 |
+| `atk gate` | 合并门禁：变更一致性 + 用例失败 + 未定性 + UI 未回填四查；支持 `--format json` |
+| `atk last` | 显示最近一次运行记录上下文；供 `--last` 系列确认操作对象 |
+| `atk console` | 启动 Web 控制台（需 `.[console]` extra） |
+
+## run_id 不用手工搬运
+
+`plan` / `smoke` / `run --record-new` 会把 run_id 写入 `.atk/last-run.json`，
+后续命令一律用 `--last`，Agent 不必从上一条输出里解析再拼接：
+
+```bash
+atk smoke --title "优惠券下单" --base main --format json   # 输出 manifest，含 next
+atk record --last --title "页面下单后列表显示待支付" --status pass
+atk review --last --by dev --verdict approve
+atk gate --last --format json
+```
+
+`atk smoke --format json` 只输出一个 JSON 对象（中间过程静默），
+其中 `next` 字段直接给出下一步该执行的命令，AI 可据此跑完整条链路。
+
+## 断言语法
+
+`expect` 支持映射式（简洁）与列表式（无歧义）。除 `status` 与相等外，
+还支持比较、包含、正则、长度、类型、枚举——别再只断 `status: 200`。
+
+```yaml
+steps:
+  - api:
+      call: "POST /api/orders"
+      expect:
+        status: 200
+        data.orderNo: not_null
+        data.payAmount: "< 90"            # 比较：< <= > >= == !=
+        data.msg: "contains: 成功"         # 包含 / not_contains
+        data.mobile: "regex: ^1[3-9]\\d{9}$"
+        data.items: "len: 3"              # 或 "len: 1..5"
+        data.id: "type: str"
+        data.state: "in: [pending, paid]"
+        data.err: is_null
+```
+
+列表式（值里带冒号等易歧义时用）：
+
+```yaml
+      expect:
+        - { path: data.payAmount, op: lte, value: 90 }
+        - { path: data.items, op: len, value: { min: 1, max: 10 } }
+```
+
+字面量以反斜杠开头可转义（`"\\<not-an-op"`）。`status` 同样支持比较：`status: "< 400"`。
+
+## UI 步骤与门禁
+
+`atk run` 不执行 `ui:` 步骤，而是标记为**待实测**（`ui_pending`）：
+既不计失败也不计受阻（不再返回 exit 2），但会自动登记成 `pending` 意图。
+AI 浏览器实测后 `atk record --last` 回填，未回填前 `atk gate` 拦截——
+门从 run 阶段移到 gate 阶段，避免"没测过就说通过"，也消除"必然受阻"的误报噪音。
+
+`atk run --skip-ui` 可显式跳过 UI 步骤（不计入结论，也不登记意图）。
 
 执行质量特性：环境错误自动重试（`retries` 默认 1）、非 JSON 响应保护、
 场景级 fixtures 数据（`data:` 字段）、变量捕获场景间隔离、退出码三态
@@ -37,6 +97,9 @@ mtime 乐观锁防外部覆盖）、触发执行（SSE 实时日志）、运行�
 环境/模块配置编辑、**定时任务**（`config/schedules.yaml` 定义 cron 或"每天 HH:MM"，
 APScheduler 到点自动执行并写入运行记录；控制台需常驻，停机不补跑）。
 界面/CLI 触发的执行均带 `--record-new` 自动入历史。前端构建产物已入库，无需 Node 环境。
+
+控制台只监听本机 `127.0.0.1`，不需要登录口令。被测服务的 Cookie、token 等凭据通过
+`config/environments.yaml` 中的 `${env:VAR}` 在启动时注入；控制台启动的 `atk run` 会继承这些环境变量。
 
 其他项目使用：`uv tool install --editable "/path/to/auto_test_framework[console]"`
 后即获得全局 `atk` 命令；目标项目内 `atk init && atk console`。
@@ -80,14 +143,28 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 ## 即时层工作流（变更驱动冒烟）
 
 ```
-atk context → atk plan → (Agent) atk run --record-to <id> + ego-browser 实测
-        → atk record <id> → atk report <id> → atk gate <id>
+atk smoke（plan→run→report→gate）→ (Agent) 浏览器实测 → atk record --last
+        → atk review --last → atk gate --last
 ```
 
 完整编排规则见 `.claude/skills/atk-smoke/SKILL.md`，API/E2E 场景起草协议见
 `docs/AI_AUTHORING_PROTOCOL.md` 或 `.claude/skills/atk-authoring/SKILL.md`；代码→模块映射见
 `config/modules.yaml`。CI 接入模板见 `.ci-examples/`（GitLab / GitHub Actions，
 含 MR 门禁 job 与夜间定时回归）。
+
+### Skill 安装布局（换 Agent 不失效）
+
+`atk init` 把包内单一源同时铺到三种布局，并按标记块幂等维护 `AGENTS.md`：
+
+| 布局 | 面向 |
+|---|---|
+| `.claude/skills/<name>/SKILL.md` | Claude / CodeBuddy |
+| `.cursor/rules/atk-<name>.md` | Cursor（含 frontmatter） |
+| `AGENTS.md`（`<!-- atk:begin/end -->` 区块） | Codex / OpenCode / 其他 |
+| `skills/<name>/SKILL.md` | 通用兜底 |
+
+UI 实测工具不再写死：`atk init --ui-tool playwright`（默认 `ego-browser`），
+SKILL.md 里的 `{{UI_TOOL}}` 会被替换。已存在的 skill 文件一律跳过，绝不覆盖。
 
 ## AI 起草场景（context 上下文包 → YAML）
 

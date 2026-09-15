@@ -25,7 +25,8 @@ class ReviewRecord(BaseModel):
 
 class IntentRecord(BaseModel):
     title: str
-    status: Literal["pass", "fail", "suspect", "blocked"] = "pass"
+    # pending：由含 ui: 步骤的场景在 run 时自动登记，等 AI 实测后 record 回填定性
+    status: Literal["pass", "fail", "suspect", "blocked", "pending"] = "pass"
     note: str = ""
     evidence: list[str] = Field(default_factory=list)
 

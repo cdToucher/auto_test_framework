@@ -10,7 +10,7 @@ body{font-family:-apple-system,'PingFang SC',sans-serif;margin:24px;color:#1a1a1
 h1{font-size:20px}.sum{margin:12px 0;padding:12px;background:#f5f6f8;border-radius:8px}
 table{border-collapse:collapse;width:100%}
 th,td{border-bottom:1px solid #e3e5e8;padding:8px;text-align:left;font-size:13px}
-.ok{color:#0a7d32}.bad{color:#c62828}.warn{color:#b26a00}
+.ok{color:#0a7d32}.bad{color:#c62828}.warn{color:#b26a00}.pending{color:#1565c0}
 ul{padding-left:18px}li{margin:4px 0;font-size:13px;list-style:none}
 """
 
@@ -28,8 +28,10 @@ def _verdict(r) -> tuple[str, str]:
         "assertion": ("bad", "失败"),
         "config": ("bad", "配置错误"),
         "environment": ("warn", "环境异常"),
+        "ui_pending": ("pending", "UI待实测"),
         "ui_unsupported": ("warn", "UI未支持(M2)"),
-        "empty": ("warn", "空场景"),
+        "skipped": ("pending", "已跳过"),
+        "empty": ("pending", "空场景"),
     }
     return mapping.get(r.error_class, ("bad", "失败"))
 
@@ -69,6 +71,12 @@ def render_html(report: RunReport, out_path: Path | str) -> Path:
         f"<span class=ok>通过 {report.passed_count}</span> / "
         f"<span class=bad>用例失败 {report.failed_count}</span> / "
         f"<span class=warn>受阻 {report.blocked_count}</span>（环境异常 {report.environment_errors}）</div>"
+        + (
+            f"<div class=sum>UI 待实测 {report.pending_ui_count} 个"
+            f"（由 AI 浏览器实测后 atk record 回填，未回填时 gate 拦截）</div>"
+            if report.pending_ui_count
+            else ""
+        )
         + (f"<ul>{err_lines}</ul>" if err_lines else "")
         + "<table><tr><th>场景</th><th>文件</th><th>模块</th><th>优先级</th><th>结论</th></tr>"
         f"{''.join(rows)}</table>"
@@ -84,6 +92,7 @@ _RUN_STATUS = {
     "fail": ("bad", "失败"),
     "suspect": ("warn", "疑似"),
     "blocked": ("warn", "受阻"),
+    "pending": ("pending", "待实测"),
 }
 
 
