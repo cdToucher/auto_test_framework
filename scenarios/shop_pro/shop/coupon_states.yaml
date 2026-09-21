@@ -1,0 +1,26 @@
+scenario: 券核销接口正确区分三种券状态
+module: shop
+priority: P1
+tags: [api, shoppro]
+env: spapro
+steps:
+  - api:
+      call: "POST /api/login"
+      body: { username: "${username}", password: "${password}" }
+      expect: { status: 200 }
+      capture: { token: "data.token" }
+  - api:
+      call: "POST /api/coupons/redeem"
+      headers: { Authorization: "Bearer ${token}" }
+      body: { code: "READYN" }
+      expect: { status: 200, data.usable: true }
+  - api:
+      call: "POST /api/coupons/redeem"
+      headers: { Authorization: "Bearer ${token}" }
+      body: { code: "NOPE-999" }
+      expect: { status: 404, msg: "contains: 券不存在" }
+  - api:
+      call: "POST /api/coupons/redeem"
+      headers: { Authorization: "Bearer ${token}" }
+      body: { code: "OLD5" }
+      expect: { status: 410, msg: "contains: 过期" }

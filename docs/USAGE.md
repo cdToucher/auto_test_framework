@@ -100,7 +100,7 @@ atk init        # 只建缺失文件，绝不覆盖：config/、scenarios/、fix
 
 | 命令 | 作用 | 常用示例 | 退出码 |
 |---|---|---|---|
-| `atk init` | 建骨架（含 Agent skill：`skills/` + `.claude/skills/`，只建缺失） | `atk init` | 0 |
+| `atk init` | 建骨架（产物收束 `.atk/`，含 skill 正文与 AGENTS.md 索引，只建缺失） | `atk init` | 0 |
 | `atk validate` | 场景合法性+重名告警，提交前自查 | `atk validate` | 0 通过 / 1 有错误 |
 | `atk context` | 输出变更上下文包（提交+补丁+模块+现有场景），供 Agent 起草 | `atk context --base main --context-out /tmp/ctx.md` | 0（含无变更）/ 2 git 错误 |
 | `atk plan` | 建运行记录，输出复用清单；Agent 可用 `--format json` | `atk plan --base main --head HEAD --format json` | 0 |
@@ -130,7 +130,7 @@ atk report <run_id>                     # 看报告
 atk gate <run_id>                       # 门禁
 ```
 
-Agent 编排版见 `.claude/skills/atk-smoke/SKILL.md`，CI 模板见 `.ci-examples/`。
+Agent 编排版见 `.atk/skills/atk-smoke/SKILL.md`，CI 模板见 `.ci-examples/`。
 
 ### 5.1b AI 主导功能测试（推荐）
 
@@ -147,7 +147,7 @@ atk gate <run_id>                                        # 汇报门禁
 ```
 
 规则：草稿只增不改；`review` 只告警不拦截（gate 判合并只看用例/定性/漂移）；
-确认超时视为发布阻塞。详见 `docs/roles.md` 与 `.claude/skills/atk-smoke/SKILL.md`。
+确认超时视为发布阻塞。详见 `docs/roles.md` 与 `.atk/skills/atk-smoke/SKILL.md`。
 
 ### 5.2 AI 补场景（context → YAML）
 

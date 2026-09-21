@@ -172,7 +172,7 @@ def test_gate_blocks_unfilled_pending_intent(proj):
 
     passed, verdicts, _line, _r = cli_mod._do_gate(rec.run_id, "HEAD", proj, runs)
     assert passed is False
-    assert any("未实测回填" in v for _ok, v in verdicts)
+    assert any("未实测回填" in v for _ok, v, _w in verdicts)
 
 
 def test_gate_passes_after_intent_filled(proj):
@@ -187,7 +187,7 @@ def test_gate_passes_after_intent_filled(proj):
     save_run(rec, runs)
 
     passed, verdicts, _line, _r = cli_mod._do_gate(rec.run_id, "HEAD", proj, runs)
-    assert not any("未实测回填" in v for _ok, v in verdicts)
+    assert not any("未实测回填" in v for _ok, v, _w in verdicts)
 
 
 def test_gate_still_blocks_suspect(proj):
@@ -201,4 +201,4 @@ def test_gate_still_blocks_suspect(proj):
 
     passed, verdicts, _line, _r = cli_mod._do_gate(rec.run_id, "HEAD", proj, runs)
     assert passed is False
-    assert any("未定性结论" in v for _ok, v in verdicts)
+    assert any("未定性结论" in v for _ok, v, _w in verdicts)

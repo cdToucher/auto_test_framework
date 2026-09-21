@@ -1,0 +1,41 @@
+scenario: 满减券下单金额计算正确
+module: order
+priority: P0
+tags: [smoke, api, shoppro]
+env: spapro
+data: fixtures/shop_pro.yaml
+steps:
+  - api:
+      call: "POST /api/login"
+      body: { username: "${username}", password: "${password}" }
+      expect: { status: 200 }
+      capture: { token: "data.token" }
+  - api:
+      call: "POST /api/cart/clear"
+      headers: { Authorization: "Bearer ${token}" }
+      expect: { status: 200 }
+  - api:
+      call: "POST /api/cart/add"
+      headers: { Authorization: "Bearer ${token}" }
+      body: { sku: "${shop_sku}", qty: "${shop_qty}" }
+      expect: { status: 200, data.added: "${shop_sku}" }
+  - api:
+      call: "POST /api/checkout"
+      headers: { Authorization: "Bearer ${token}" }
+      body: { coupon: "SAVE10" }
+      expect:
+        status: 200
+        data.orderNo: "regex: ^SP-\\d{4}$"
+        data.total: 100
+        data.discount: 10
+        data.payable: 90
+        data.status: pending
+      capture: { orderNo: "data.orderNo" }
+  - api:
+      call: "GET /api/orders/${orderNo}"
+      headers: { Authorization: "Bearer ${token}" }
+      expect:
+        status: 200
+        data.orderNo: "${orderNo}"
+        data.payable: 90
+        data.status: pending

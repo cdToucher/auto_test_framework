@@ -1,4 +1,4 @@
-"""全局项目注册表：~/.atk/registry.db（SQLite，只存索引不存用例）。"""
+"""全局项目注册表：~/.atk/registry.db（SQLite，只存项目索引不存用例）。"""
 import sqlite3
 import time
 from pathlib import Path
@@ -11,11 +11,6 @@ CREATE TABLE IF NOT EXISTS projects(
   path TEXT UNIQUE,
   name TEXT,
   last_seen_at TEXT
-);
-CREATE TABLE IF NOT EXISTS runs_index(
-  run_id TEXT, project_path TEXT, started_at TEXT,
-  status TEXT, pass_n INT, fail_n INT, blocked_n INT,
-  PRIMARY KEY(run_id, project_path)
 );
 """
 
@@ -49,43 +44,3 @@ def list_projects(db: Path | None = None) -> list[dict]:
 def remove_project(path: str, db: Path | None = None) -> None:
     with _conn(db) as c:
         c.execute("DELETE FROM projects WHERE path=?", (path,))
-        c.execute("DELETE FROM runs_index WHERE project_path=?", (path,))
-
-
-def rebuild_index(db: Path | None = None) -> int:
-    """扫描所有注册项目的 reports/runs，重建 runs_index。返回条目数。"""
-    import yaml
-
-    entries = []
-    for proj in list_projects(db):
-        runs_dir = Path(proj["path"]) / "reports" / "runs"
-        if not runs_dir.exists():
-            continue
-        for d in runs_dir.iterdir():
-            f = d / "run.yaml"
-            if not f.is_file():
-                continue
-            try:
-                rec = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
-            except Exception:
-                continue
-            scs = rec.get("scenarios") or []
-            pass_n = sum(1 for s in scs if s.get("passed"))
-            fail_n = sum(1 for s in scs if not s.get("passed") and s.get("error_class") in ("assertion", "config"))
-            blocked_n = sum(
-                1
-                for s in scs
-                if not s.get("passed")
-                and s.get("error_class") not in ("assertion", "config", "ui_pending", "skipped")
-            )
-            entries.append((
-                rec.get("run_id", d.name), proj["path"], rec.get("created_at"),
-                rec.get("status", ""), pass_n,
-                fail_n,
-                blocked_n,
-            ))
-    with _conn(db) as c:
-        c.execute("DELETE FROM runs_index")
-        c.executemany(
-            "INSERT OR REPLACE INTO runs_index VALUES(?,?,?,?,?,?,?)", entries)
-    return len(entries)

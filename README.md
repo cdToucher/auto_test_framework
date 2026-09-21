@@ -2,43 +2,96 @@
 
 【此项目还是在沉淀和实践中，目的是使用本地AI或者非常便宜的API 自动化生成冒烟用例和做接口测试，结合AI 浏览器再做e2e 测试，生成测试报告，扩展开发角色责任边界 】
 
-即时层（变更驱动冒烟，不落库）+ 沉淀层（YAML 场景回归），设计详见
-`docs/superpowers/specs/2026-08-24-atk-design.md`，角色规范见 `docs/roles.md`。
+即时层（变更驱动冒烟，不落库）+ 沉淀层（YAML 场景回归）。设计思路见 `docs/DESIGN.md`，
+原始规格见 `docs/superpowers/specs/`，角色规范见 `docs/roles.md`，
+人机协作全流程见 `docs/human-ai-workflow.html`。
 
 核心思想：**AI 干量产的活（生成/实测/固化填充），人做判断的事（审断言、定性失败），机器守确定的门（gate）。**
+
+## 三条命令起步
+
+接入一个新项目，人只需要回答两个问题：**被测服务在哪**、**先建哪些模块**。
+
+```bash
+cd /path/to/被测项目
+
+# ① 一步生成：环境 + 模块映射 + 首批健康检查场景 + AI 工作流说明
+atk init --url http://127.0.0.1:8080 --modules order,coupon \
+  --var 'token=${env:ATK_TOKEN}'      # 凭据形态自定：token/cookie/用户名密码，全部非必填
+
+# ② 验证链路（先看清会跑什么，再真跑）
+atk validate
+atk run --dry-run                     # 只列选中场景，不执行
+atk run                               # 健康场景应已通过——流程已经转起来
+
+# ③ 之后交给 AI / CI
+atk smoke --base main --title "优惠券下单" --format json
+```
+
+`modules.yaml` 是可选项：不配代码→模块映射时 `smoke` 自动全量执行（慢但绝不漏测）；
+配好后才享受"按变更增量选场景"。凭据永远不入库：`${env:VAR}` 加载期解析、缺失显式告警；
+临时参数 `atk run --set k=v`（优先级 env < fixture < `--set` < capture）。
+
+## 目录布局：一切产物收束 `.atk/`
+
+```text
+<被测项目>/
+├── AGENTS.md                  # AI 入口：命令速查 + 硬规则 + 正文索引（根级仅此与 .gitignore）
+├── .gitignore                 # init 幂等维护：只忽略可再生产物，场景库照常入库
+└── .atk/
+    ├── environments.yaml      # 环境（vars 默认为空，示例以注释给出）
+    ├── modules.yaml           # 代码→模块映射（可选）
+    ├── scenarios/<模块>/      # 场景库——YAML 是唯一事实源，照常提交 git
+    ├── fixtures/              # 场景 data: 引用的测试数据
+    ├── reports/runs/          # 运行记录 + 报告 + 截图证据
+    ├── skills/<名称>/SKILL.md # 工作流正文（atk-smoke / atk-authoring）
+    ├── last-run.json          # --last 指针
+    └── manifest.json          # init 生成物清单+内容指纹（purge 的安全依据）
+```
+
+- **旧项目零迁移**：存在 `scenarios/`、`config/`、`reports/` 任一即自动识别为旧布局，
+  全部命令原样工作；显式传 `--root/--env-file/--runs-dir` 等参数永远优先。
+- **不创建 `.claude/`、`.cursor/`**：主流 TUI/CLI（Codex、OpenCode、Claude Code 等）都会
+  自动加载项目根 `AGENTS.md`，由其索引指向 `.atk/skills/` 正文，换 Agent 不失效。
+  `atk init --ui-tool playwright` 可替换正文里的实测工具名（默认 `ego-browser`）。
+- **反悔**：`atk purge` 按 manifest 指纹只删 init 生成且未手工改动的物料，
+  你写的场景、改过的配置一律保留；还能清掉旧版散落的 `.claude/.cursor/skills` 拷贝。
 
 ## 功能总览
 
 | 命令 | 作用 |
 |---|---|
-| `atk init` | 初始化项目结构（只建缺失文件，绝不覆盖）；`--ui-tool` 指定 AI 实测浏览器 |
-| `atk validate` | 场景库合法性校验（错误+重名告警），QA 提交前自查 |
-| `atk context` | 输出确定性变更上下文包（提交记录 + 补丁 + 模块归属），供 Agent 按 atk-authoring 协议起草场景 |
-| `atk plan` | 创建运行记录，输出复用场景清单与待补全意图；支持 `--format json` |
-| `atk run` | 执行场景：HTML 报告 + 可选 JUnit XML + 可并入运行记录；`--skip-ui` 跳过 UI 步骤 |
-| `atk smoke` | 一键冒烟：plan→run→report→gate；`--format json` 输出含 `next` 建议的 manifest |
-| `atk record` | Agent 回填 UI 探索意图结论（pass/fail/suspect/blocked + 截图证据），支持 `--from-json` |
-| `atk report` | 渲染运行记录为统一 HTML 报告（含截图缩略） |
+| `atk init` | 一步初始化（`--url/--env-name/--modules/--var`；只建缺失，绝不覆盖）；`--ui-tool` 指定 AI 实测浏览器 |
+| `atk validate` | 场景库校验：错误 + 重名告警 + module 与目录不一致告警 |
+| `atk context` | 确定性变更上下文包（提交+补丁+模块归属+现有场景），供 AI 按 atk-authoring 起草 |
+| `atk plan` | 建运行记录，输出复用清单与待补全意图；`--format json` |
+| `atk run` | 执行场景；`--dry-run` 只列选中；空选中按受阻（exit 2，`--allow-empty` 豁免）；`--set k=v` 临时变量；`--skip-ui`；JUnit `--junit` |
+| `atk smoke` | 一键冒烟 plan→run→report→gate；`--format json` 的 manifest 含 `next` 建议命令 |
+| `atk record` | 回填实测结论（pass/fail/suspect/blocked + 截图）；**status 必须显式给出**；同名意图就地更新；`--from-json` |
+| `atk report` / `atk last` | 渲染运行记录 HTML（含截图缩略）/ 查看最近操作对象 |
 | `atk review` | 开发整单确认（approve/reject），仅告警不拦截 |
-| `atk review-draft` | 草稿评审：approve 去 `ai-generated` tag 转正，reject 移走留档 |
-| `atk gate` | 合并门禁：变更一致性 + 用例失败 + 未定性 + UI 未回填四查；支持 `--format json` |
-| `atk last` | 显示最近一次运行记录上下文；供 `--last` 系列确认操作对象 |
-| `atk console` | 启动 Web 控制台（需 `.[console]` extra） |
+| `atk review-draft` | AI 草稿评审：approve 去 `ai-generated` tag 转正，reject 移走留档 |
+| `atk gate` | 合并门禁（见下节）；`--format json` 输出结构化 verdicts/blocking/warnings |
+| `atk purge` | 删除 init 生成物料（manifest 指纹保护手工内容；`--yes` 免确认；`--with-reports` 连运行记录一起清） |
+| `atk console` | Web 控制台（需 `.[console]` extra） |
 
-## run_id 不用手工搬运
+## gate 到底拦什么
 
-`plan` / `smoke` / `run --record-new` 会把 run_id 写入 `.atk/last-run.json`，
-后续命令一律用 `--last`，Agent 不必从上一条输出里解析再拼接：
+全部基于结构化记录判定，不接受口头结论：
 
-```bash
-atk smoke --title "优惠券下单" --base main --format json   # 输出 manifest，含 next
-atk record --last --title "页面下单后列表显示待支付" --status pass
-atk review --last --by dev --verdict approve
-atk gate --last --format json
-```
+| 检查项 | 结论 |
+|---|---|
+| 变更文件清单与记录不一致 | **拦截**（测的不是要合的代码，重新 plan） |
+| head commit SHA 与记录时点不同 | **拦截**（文件清单没变但内容变了也拦，防 amend/rebase） |
+| 用例失败（断言/配置错误） | **拦截** |
+| 意图 `fail` / `suspect` | **拦截**（suspect 必须人定性，不允许沉默） |
+| UI 意图仍是 `pending`（未实测回填） | **拦截**（没测过不能说通过） |
+| 用例在运行时是 AI 草稿且未评审转正 | **拦截**（跑完草稿再 reject 移走也绕不过） |
+| 记录里无场景结果也无意图 | **拦截**（空跑不构成通过的证据） |
+| 工作区未提交文件 / 环境受阻 / 未经整单确认 | 仅告警 |
 
-`atk smoke --format json` 只输出一个 JSON 对象（中间过程静默），
-其中 `next` 字段直接给出下一步该执行的命令，AI 可据此跑完整条链路。
+与之配套：`run`/`smoke` **选中 0 场景按受阻处理（exit 2）**——模块名打错、场景库为空
+都不可能"静默全绿"；未解析的 `${var}` 发请求前拦截，`${env:VAR}` 缺失显式告警。
 
 ## 断言语法
 
@@ -71,59 +124,89 @@ steps:
 
 字面量以反斜杠开头可转义（`"\\<not-an-op"`）。`status` 同样支持比较：`status: "< 400"`。
 
-## UI 步骤与门禁
+## UI 步骤与 AI 实测（人机接力）
 
-`atk run` 不执行 `ui:` 步骤，而是标记为**待实测**（`ui_pending`）：
-既不计失败也不计受阻（不再返回 exit 2），但会自动登记成 `pending` 意图。
-AI 浏览器实测后 `atk record --last` 回填，未回填前 `atk gate` 拦截——
-门从 run 阶段移到 gate 阶段，避免"没测过就说通过"，也消除"必然受阻"的误报噪音。
+`atk run` 不执行 `ui:` 步骤，而是标记为**待实测**（`ui_pending`）并自动登记 `pending`
+意图；AI 用浏览器实测后回填，未回填前 `atk gate` 拦截——门从 run 阶段移到 gate 阶段，
+既消除"必然受阻"的误报噪音，也保证"没测过不会说通过"。`--skip-ui` 可显式忽略。
 
-`atk run --skip-ui` 可显式跳过 UI 步骤（不计入结论，也不登记意图）。
-
-执行质量特性：环境错误自动重试（`retries` 默认 1）、非 JSON 响应保护、
-场景级 fixtures 数据（`data:` 字段）、变量捕获场景间隔离、退出码三态
-（0 通过 / 1 失败 / 2 受阻或配置问题）、`${env:VAR}` 敏感值注入
-（口令/会话凭证不入库，加载期解析）。
-
-## Web 控制台（需安装 `.[console]` extra，否则 `atk console` 不可用）
+即时层工作流（AI 主导，人只有两个介入点：**审 expect**、**整单确认**）：
 
 ```bash
-atk console          # 项目模式（当前目录），浏览器打开 http://127.0.0.1:8900
-atk console -g       # 全局模式：注册/管理多个 atk 工程，一键拉起各项目控制台
+atk smoke --title "优惠券下单" --base main --format json   # manifest 含 next 命令
+# (Agent 按 intents_pending 逐条浏览器实测，截图存档)
+atk record --last --from-json /tmp/ui-result.json
+atk review --last --by dev --verdict approve
+atk gate --last --format json
 ```
 
-功能：场景树浏览、表单化编排（API/UI 步骤卡片 ⇄ YAML 源码双模式，保存前强制校验，
-mtime 乐观锁防外部覆盖）、触发执行（SSE 实时日志）、运行历史与截图证据、
-环境/模块配置编辑、**定时任务**（`config/schedules.yaml` 定义 cron 或"每天 HH:MM"，
-APScheduler 到点自动执行并写入运行记录；控制台需常驻，停机不补跑）。
-界面/CLI 触发的执行均带 `--record-new` 自动入历史。前端构建产物已入库，无需 Node 环境。
+`plan/smoke/run --record-new` 会把 run_id 写入 `.atk/last-run.json`，后续命令一律
+`--last`，AI 不必解析拼接；`--format json` 只输出机器可读结果（含 `next` 建议命令，
+status 刻意留占位符——回填必须显式表态）。完整编排规则见
+`.atk/skills/atk-smoke/SKILL.md`，起草协议见 `docs/AI_AUTHORING_PROTOCOL.md` /
+`.atk/skills/atk-authoring/SKILL.md`；CI 模板见 `.ci-examples/`。
 
-控制台只监听本机 `127.0.0.1`，不需要登录口令。被测服务的 Cookie、token 等凭据通过
-`config/environments.yaml` 中的 `${env:VAR}` 在启动时注入；控制台启动的 `atk run` 会继承这些环境变量。
+## 场景编写
 
-其他项目使用：`uv tool install --editable "/path/to/auto_test_framework[console]"`
-后即获得全局 `atk` 命令；目标项目内 `atk init && atk console`。
+场景所在目录名即模块名（`module` 缺省按最近父目录兜底；字段与目录不一致 validate 会告警——
+`--module` 与影响面分析按字段匹配，目录名匹配不到）。
 
-已知限制：表单保存重写 YAML 会丢失注释；定时任务需控制台常驻。
+```yaml
+scenario: 下单后可查询订单
+module: order
+priority: P0            # P0=门禁必跑 / P1=夜间回归 / P2=周级全量
+tags: [smoke]
+data: fixtures/order.yaml   # 场景级测试数据，优先级 env < fixture < --set < capture
+steps:
+  - api:
+      call: "POST /api/login"
+      body: { username: "${username}", password: "${password}" }
+      expect: { status: 200 }
+      capture: { token: "data.token" }   # 捕获响应值供后续步骤引用
+      retries: 2                          # 仅环境类错误重试，断言失败不重试
+```
+
+执行质量：退出码三态（0 通过 / 1 失败 / 2 受阻·空选中·配置问题）；非 JSON 响应保护；
+变量捕获场景间隔离；`run --record-to` 幂等（重跑覆盖旧结果，不重复累积）。
 
 ## Demo 被测系统
 
-`examples/demo_app.py`（端口 8766）：待办任务管理，含登录鉴权、状态机
-（pending→done，重复完成 409）、参数校验（空标题 422）与 Web 页面，
-配套场景库在 `scenarios/demo_app/`——覆盖正向链路、负向断言与 UI 探索，
-是框架各能力的端到端示例。
+| 系统 | 端口 | 说明 |
+|---|---|---|
+| `examples/mock_server.py` | 8765 | 快速上手最小服务 |
+| `examples/demo_app.py` | 8766 | 待办任务：状态机/参数校验/页面，配套 `scenarios/demo_app/` |
+| `examples/spa_shop.py` | 8777 | 单页商城：API+UI 混合 dogfood，见 `docs/spa-shop-dogfood.html` |
+| `examples/shop_pro.py` | 8788 | **复杂演示**：鉴权、库存、购物车校验、五种优惠券规则（满减/折扣/门槛/过期/每人限用）、订单状态机、401/404/409/410/422 全错误面 + 页面 |
 
-`examples/spa_shop.py`（端口 8777）：单页面商城，覆盖登录、优惠券、下单、
-订单查询。配套场景库在 `scenarios/spashop/`，其中 `api` 标签场景由
-`atk run` 自动执行，`ui/e2e` 场景由 AI 浏览器实测后通过
-`atk record --from-json` 归档。完整 dogfood 流程见
-`docs/spa-shop-dogfood.html`。
+`scenarios/shop_pro/` 按 `auth/ shop/ order/` 目录组织 13 张场景，覆盖 fixture 数据、
+capture 链、整数变量注入、UI 闭环与全部拦截路径；重跑回归前需重置演示状态：
+
+```bash
+python -m examples.shop_pro &
+atk run --tags shoppro                            # 11 API 全过 + 1 UI 登记待实测
+curl -X POST http://127.0.0.1:8788/api/dev/reset  # 回归重跑前
+```
+
+端到端自动化验证（smoke→拦截→回填→放行全链、init 一键、--set）见
+`tests/test_shop_pro_dogfood.py`。
+
+## Web 控制台（需安装 `.[console]` extra）
+
+```bash
+atk console          # 项目模式（当前目录），http://127.0.0.1:8900，路径跟随布局探测
+atk console -g       # 全局模式：注册/管理多个 atk 工程，一键拉起各项目控制台
+```
+
+功能：场景树浏览、表单 ⇄ YAML 源码双模式编排（保存前强制校验、mtime 乐观锁防外部覆盖）、
+触发执行（SSE 实时日志 + 断流轮询兜底）、运行历史（受阻/待实测分色、截图证据）、
+配置编辑、定时任务（`.atk/schedules.yaml` 或旧布局 `config/schedules.yaml`，cron 或
+"每天 HH:MM"，控制台常驻、停机不补跑）。只监听 `127.0.0.1`；被测服务凭据经
+`${env:VAR}` 在启动时注入，由子进程 `atk run` 继承。前端构建产物已入库，无需 Node。
 
 ## 接入真实项目示例：信飞诉调系统
 
-`scenarios/xinfei/` + `config/environments.yaml[xinfei]` 演示了对已部署
-测试环境（https://xinfei-test.anmiai.com）的接入方式：Cookie+token 双凭证
-经 `${env:VAR}` 注入，只读接口冒烟先行。日常用法：
+`scenarios/xinfei/` + 环境配置演示对已部署测试环境的接入（旧布局）：Cookie+token 双凭证
+经 `${env:VAR}` 注入，只读接口冒烟先行。
 
 ```bash
 export ATK_XF_COOKIE="token=...; orgId=..."   # 登录后从 DevTools 导出
@@ -131,83 +214,26 @@ export ATK_XF_TOKEN="dac581dc..."
 atk run --env xinfei --module seal
 ```
 
-## 快速开始
+## 安装
 
 ```bash
+# 仓库内开发
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-.venv/bin/atk init                            # 生成配置与示例场景骨架
-.venv/bin/python -m examples.mock_server &    # 示例被测服务
+.venv/bin/python -m examples.mock_server &
 .venv/bin/atk validate && .venv/bin/atk run --env local
+
+# 全局 atk 命令（跨项目使用；editable，框架改动即时生效）
+./scripts/install_atk.sh        # = uv tool install --editable "<repo>[console]"
+./scripts/uninstall_atk.sh      # 卸载全局工具，不碰项目内文件
 ```
 
-## 即时层工作流（变更驱动冒烟）
+## 已知限制（YAGNI 清单）
 
-```
-atk smoke（plan→run→report→gate）→ (Agent) 浏览器实测 → atk record --last
-        → atk review --last → atk gate --last
-```
+不做用户体系/多租户（本机单人）；不做用例入库（任何形式的 DB 双写都会破坏
+YAML 唯一事实源）；停机期间定时任务不补跑；`ui:` 步骤由 AI 实测回填而非内置执行
+（刻意保留人机接力点）；表单保存重写 YAML 会丢注释。
 
-完整编排规则见 `.claude/skills/atk-smoke/SKILL.md`，API/E2E 场景起草协议见
-`docs/AI_AUTHORING_PROTOCOL.md` 或 `.claude/skills/atk-authoring/SKILL.md`；代码→模块映射见
-`config/modules.yaml`。CI 接入模板见 `.ci-examples/`（GitLab / GitHub Actions，
-含 MR 门禁 job 与夜间定时回归）。
-
-### Skill 安装布局（换 Agent 不失效）
-
-`atk init` 把包内单一源同时铺到三种布局，并按标记块幂等维护 `AGENTS.md`：
-
-| 布局 | 面向 |
-|---|---|
-| `.claude/skills/<name>/SKILL.md` | Claude / CodeBuddy |
-| `.cursor/rules/atk-<name>.md` | Cursor（含 frontmatter） |
-| `AGENTS.md`（`<!-- atk:begin/end -->` 区块） | Codex / OpenCode / 其他 |
-| `skills/<name>/SKILL.md` | 通用兜底 |
-
-UI 实测工具不再写死：`atk init --ui-tool playwright`（默认 `ego-browser`），
-SKILL.md 里的 `{{UI_TOOL}}` 会被替换。已存在的 skill 文件一律跳过，绝不覆盖。
-
-## AI 起草场景（context 上下文包 → YAML）
-
-`atk context` 只产出确定性上下文包，场景由 AI Agent 按 atk-authoring 协议编写：
-
-```bash
-# 方式一：Agent 会话内触发 skill（自动调 atk context 拿包并起草）
-# 对 Agent 说：为这次改动补测试场景
-
-# 方式二：先落盘上下文包，再交给 Agent（配合 .claude/skills/atk-authoring 使用）
-atk context --base <基线> --context-out /tmp/ctx.md
-```
-
-上下文包含：提交记录（含说明正文）、分文件补丁、模块归属、受影响模块的现有场景
-（去重 + 风格对齐）。草稿自动加 `ai-generated` 标签与溯源头注释，绝不覆盖已有文件；
-expect 断言需人工评审后再参与门禁。
-
-```bash
-atk validate && atk run --tags ai-generated     # 校验并实测草稿
-```
-
-## 场景编写
-
-参考 `scenarios/demo/`。步骤分 `api:`（结构化，立即生效）与 `ui:`
-（自然语言，即时层由 Agent 实测）。
-`expect` 是场景的灵魂，也是 QA 评审的核心对象。
-
-```yaml
-scenario: 下单后可查询订单
-module: order
-priority: P0            # P0=门禁必跑 / P1=夜间回归 / P2=周级全量
-tags: [smoke]
-data: fixtures/order.yaml   # 场景级测试数据，优先级 env < fixture < capture
-steps:
-  - api:
-      call: "POST /api/login"
-      body: { username: "${username}", password: "${password}" }
-      expect: { status: 200 }
-      capture: { token: "data.token" }   # 捕获响应值供后续步骤
-      retries: 2                          # 仅环境类错误重试
-```
-
-## 路线图
+## 路线图与状态
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
@@ -215,3 +241,18 @@ steps:
 | M2 | Agent 编排 UI 执行器 + 即时层全链路 | ✅ |
 | M3 | 门禁(gate) + CI 样例（export/doctor 已下线） | ✅ |
 | M4 | 角色规范文档（docs/roles.md） | ✅ |
+| M5 | 强化门禁与低门槛起步：空选中拦截、内容一致性、草稿时点判定、`.atk/` 布局收束、init 一键、`--dry-run/--set/--var`、`purge`、复杂 demo | ✅ |
+| — | 发布：pip 发包 → npm 元包评估（对标 esbuild/turbo 模式） | 待提效数据立项，见 `docs/PUBLISH.md` |
+
+343 个自动化测试全绿（`pytest`），含复杂 demo 全流程 dogfood。
+
+## 文档索引
+
+| 文档 | 内容 |
+|---|---|
+| `docs/human-ai-workflow.html` | **人机协作使用说明**：三条命令起步、gate 判定表、AI 操作细则 |
+| `docs/DESIGN.md` | 设计思路与权衡（为什么双层、为什么 YAML-first、为什么不做的清单） |
+| `docs/roles.md` | 流程轨：角色与质量门禁规范（suspect 24h SLA 等） |
+| `docs/AI_AUTHORING_PROTOCOL.md` | AI 起草场景协议（skill 正文的文档版） |
+| `docs/USAGE.md` / `docs/QUICKSTART_SCENARIOS.md` | 命令手册 / 场景快速上手 |
+| `docs/superpowers/` | 原始规格（specs）与各里程碑实施计划（plans） |

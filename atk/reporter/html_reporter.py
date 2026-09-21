@@ -29,9 +29,7 @@ def _verdict(r) -> tuple[str, str]:
         "config": ("bad", "配置错误"),
         "environment": ("warn", "环境异常"),
         "ui_pending": ("pending", "UI待实测"),
-        "ui_unsupported": ("warn", "UI未支持(M2)"),
         "skipped": ("pending", "已跳过"),
-        "empty": ("pending", "空场景"),
     }
     return mapping.get(r.error_class, ("bad", "失败"))
 
@@ -75,6 +73,13 @@ def render_html(report: RunReport, out_path: Path | str) -> Path:
             f"<div class=sum>UI 待实测 {report.pending_ui_count} 个"
             f"（由 AI 浏览器实测后 atk record 回填，未回填时 gate 拦截）</div>"
             if report.pending_ui_count
+            else ""
+        )
+        + (
+            "<div class=sum>"
+            + "<br>".join(f"<span class=warn>⚠ {_html.escape(w)}</span>" for w in report.env_warnings)
+            + "</div>"
+            if report.env_warnings
             else ""
         )
         + (f"<ul>{err_lines}</ul>" if err_lines else "")

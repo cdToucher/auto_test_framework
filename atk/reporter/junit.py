@@ -2,7 +2,7 @@
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-_BLOCKING = ("environment", "ui_unsupported", "empty")
+_BLOCKING = ("environment",)
 
 
 def write_junit(report, out_path: Path | str) -> Path:

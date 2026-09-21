@@ -156,14 +156,15 @@ const symbolOps = { '==': 'eq', '!=': 'ne', '<': 'lt', '<=': 'lte', '>': 'gt', '
 
 const clone = (value) => JSON.parse(JSON.stringify(value || {}))
 const kvToRows = (o) => Object.entries(o || {}).map(([k, v]) => ({
-  k: String(k), v: typeof v === 'string' ? v : JSON.stringify(v), _valueType: typeof v,
+  k: String(k), v: typeof v === 'string' ? v : JSON.stringify(v),
 }))
 const rowsToKv = (rows) => {
   const o = {}
   for (const r of rows || []) {
     if (r.k === '') continue
-    // 既有字符串保持字符串，避免 "true"、"001" 等看似 JSON 的值被无意改型。
-    o[r.k] = r._valueType === 'string' ? r.v : coerce(r.v)
+    // headers/capture 在模型里是 dict[str,str]，值一律转字符串，
+    // 否则 "5" 会被 JSON.parse 成 int 触发难以理解的校验错误
+    o[r.k] = r.v === null || r.v === undefined ? '' : String(r.v)
   }
   return o
 }
@@ -215,7 +216,11 @@ function expectToRows(expect) {
 }
 
 function rowsToExpect(rows) {
-  return (rows || []).filter(row => row.key.trim()).map((row) => {
+  return (rows || [])
+    .filter(row => row.key.trim())
+    // status 断言留空会被静默丢出，避免产出"status 期望空串"的隐形断言
+    .filter(row => !(row.key.trim() === 'status' && String(row.value).trim() === ''))
+    .map((row) => {
     const op = normalizeOp(row.op)
     const value = row._valueType === 'string' ? row.value : coerce(row.value)
     if (row.key.trim() === 'status') return { status: value, op }

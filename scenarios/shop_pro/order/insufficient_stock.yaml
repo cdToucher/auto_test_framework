@@ -1,0 +1,16 @@
+scenario: 超过库存的加购被拒绝
+module: order
+priority: P1
+tags: [negative, api, shoppro]
+env: spapro
+steps:
+  - api:
+      call: "POST /api/login"
+      body: { username: "${username}", password: "${password}" }
+      expect: { status: 200 }
+      capture: { token: "data.token" }
+  - api:
+      call: "POST /api/cart/add"
+      headers: { Authorization: "Bearer ${token}" }
+      body: { sku: "SKU-TEA", qty: 99 }
+      expect: { status: 409, msg: "contains: 库存不足" }

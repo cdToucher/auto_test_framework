@@ -6,7 +6,7 @@ import httpx
 
 from ..store.models import ApiExpect, ApiStep
 from .asserts import MISSING, evaluate, get_path
-from .env import substitute
+from .env import find_unresolved, substitute
 
 _VALID_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
 
@@ -38,9 +38,32 @@ class ApiExecutor:
             path = substitute(raw_path, self.variables)
             headers = substitute(step.headers, self.variables)
             body = substitute(step.body, self.variables) if step.body is not None else None
+            expectations = [
+                ApiExpect(
+                    status=e.status,
+                    status_op=e.status_op,
+                    path=substitute(e.path, self.variables) if e.path else e.path,
+                    op=e.op,
+                    value=substitute(e.value, self.variables),
+                    raw=substitute(e.raw, self.variables) if e.raw else e.raw,
+                )
+                for e in step.expect
+            ]
         except Exception as e:
             return StepResult(
                 step.call, False, f"配置错误: {e}", error_class="config",
+            )
+        # 未解析的 ${var} 原样透传给服务端只会产生误导性失败，发请求前拦截
+        unresolved = find_unresolved([path, headers, body, [
+            (e.path, e.value, e.raw) for e in expectations
+        ]])
+        if unresolved:
+            return StepResult(
+                step.call,
+                False,
+                f"配置错误: 变量未解析 {'、'.join(unresolved)}"
+                "（检查 capture 是否产出该变量、环境 vars 拼写，或场景间变量隔离）",
+                error_class="config",
             )
         resp = None
         last_err: Exception | None = None
@@ -65,24 +88,6 @@ class ApiExecutor:
                 False,
                 f"环境异常(重试{step.retries}次): {last_err}",
                 error_class="environment",
-            )
-
-        expectations = []
-        try:
-            for e in step.expect:
-                expectations.append(
-                    ApiExpect(
-                        status=e.status,
-                        status_op=e.status_op,
-                        path=substitute(e.path, self.variables) if e.path else e.path,
-                        op=e.op,
-                        value=substitute(e.value, self.variables),
-                        raw=substitute(e.raw, self.variables) if e.raw else e.raw,
-                    )
-                )
-        except Exception as e:
-            return StepResult(
-                step.call, False, f"配置错误: {e}", error_class="config",
             )
 
         failures = [

@@ -30,12 +30,24 @@ def repo(tmp_path, monkeypatch):
 
 
 def _make_run(repo):
-    from atk.run_store import create_run, save_run
+    from atk.run_store import (
+        ScenarioSummary,
+        StepSummary,
+        create_run,
+        save_run,
+    )
 
     rec = create_run(runs_dir=repo / "reports" / "runs")
     rec.base_ref = "HEAD~1"
     rec.head_ref = "HEAD"
     rec.affected_files = ["src/demo/logic.py"]
+    # 新 gate 规则：无任何场景与意图的记录不放行，评审用例需带一条通过结果
+    rec.scenarios.append(
+        ScenarioSummary(
+            name="s", file="scenarios/s.yaml", passed=True, error_class="none",
+            steps=[StepSummary(title="step", passed=True, detail="200")],
+        )
+    )
     save_run(rec, runs_dir=repo / "reports" / "runs")
     return rec
 

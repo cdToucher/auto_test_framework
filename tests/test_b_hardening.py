@@ -294,23 +294,3 @@ def test_b9_logging_default_warning():
     assert "level=logging.DEBUG" not in src
 
 
-def test_b9_registry_blocked_semantics(tmp_path: Path):
-    from atk.console import registry as reg
-    db = tmp_path / "reg.db"
-    proj = tmp_path / "proj"
-    rd = proj / "reports" / "runs" / "r1"
-    rd.mkdir(parents=True)
-    (rd / "run.yaml").write_text(
-        "run_id: r1\ncreated_at: '2026-01-01T00:00:00'\nscenarios:\n"
-        "- name: a\n  passed: true\n  error_class: none\n"
-        "- name: b\n  passed: false\n  error_class: assertion\n"
-        "- name: c\n  passed: false\n  error_class: environment\n",
-        encoding="utf-8")
-    with (rd / "run.yaml").open("a", encoding="utf-8") as f:
-        f.write("- name: d\n  passed: false\n  error_class: ui_pending\n")
-    reg.upsert_project(proj, db=db)
-    assert reg.rebuild_index(db=db) == 1
-    import sqlite3
-    c = sqlite3.connect(db)
-    row = c.execute("SELECT pass_n, fail_n, blocked_n FROM runs_index").fetchone()
-    assert row[0] == 1 and row[1] == 1 and row[2] == 1

@@ -16,7 +16,7 @@ description: 功能级AI主导冒烟测试工作流。当开发者给出功能�
    拿到 run_id 与复用场景执行结果（plan→run→report→gate 一次完成）。
 
 2. **缺场景补草稿**：若 smoke 输出显示无复用覆盖或关键意图缺失，
-   按 atk-authoring 协议调 `atk context` 补 API/E2E 草稿（`scenarios/<module>/gen-*.yaml`，只增不改）。
+   按 atk-authoring 协议调 `atk context` 补 API/E2E 草稿（写入场景库 `<module>/gen-*.yaml`——init 新项目在 `.atk/scenarios/`，旧项目在 `scenarios/`，只增不改）。
 
 3. **介入点 1——审 expect（停下）**：向开发展示草稿路径与 expect 清单，
    请开发评审断言业务正确性；评审结论用命令落盘（approve 去 tag 转正，reject 移走留档）：

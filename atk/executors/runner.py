@@ -21,8 +21,7 @@ class ScenarioResult:
     # environment    环境异常（网络/连接/超时）
     # config         配置错误（call 格式、变量、fixture）
     # ui_pending     UI 步骤待 AI 浏览器实测，用 atk record 回填（不是失败）
-    # ui_unsupported UI 步骤无法归类的未知错误
-    # skipped        空场景或 --skip-ui 后无可执行步骤（不计入结果）
+    # skipped        --skip-ui 后无可执行步骤（不计入结果）
     error_class: str
     steps: list[StepResult] = field(default_factory=list)
     duration_ms: int = 0
@@ -35,6 +34,7 @@ class RunReport:
     started_at: str = ""
     results: list[ScenarioResult] = field(default_factory=list)
     load_errors: list[str] = field(default_factory=list)
+    env_warnings: list[str] = field(default_factory=list)
 
     @property
     def total(self) -> int:
@@ -103,8 +103,13 @@ class Runner:
         priority: Priority | None = None,
         on_result=None,
         skip_ui: bool = False,
+        extra_vars: dict[str, str] | None = None,
     ) -> RunReport:
-        """env_name 为 None 时，按各场景自身的 env 字段选择环境。"""
+        """env_name 为 None 时，按各场景自身的 env 字段选择环境。
+
+        extra_vars（如 --set k=v）压过 env vars 与 fixture，但 capture 运行时
+        提取值仍最高——保证"命令行为临时参数服务，真实响应覆盖其后步骤"。
+        """
         scenarios, errors = load_scenarios(self.scenarios_root)
         report = RunReport(
             env_name=env_name or "(按场景)",
@@ -121,6 +126,11 @@ class Runner:
                 if env is None:
                     env = load_env(self.env_file, name)
                     envs[name] = env
+                    if env.missing_env:
+                        report.env_warnings.append(
+                            f"环境 '{name}' 的 ${{env:VAR}} 引用的环境变量未设置（按空串解析）: "
+                            + ", ".join(env.missing_env)
+                        )
                 client = clients.get(name)
                 if client is None:
                     client = httpx.Client(
@@ -177,6 +187,8 @@ class Runner:
                         continue
                     # fixture 内同样支持 ${env:VAR}，避免敏感值只得写进场景文件
                     variables.update(substitute(fixture_vars, variables))
+                if extra_vars:
+                    variables.update(extra_vars)
                 t0 = time.perf_counter()
                 result = self._run_one(ApiExecutor(client, variables), sc, skip_ui)
                 result.duration_ms = int((time.perf_counter() - t0) * 1000)

@@ -1,0 +1,35 @@
+scenario: 同一张券重复使用被拒绝
+module: order
+priority: P1
+tags: [negative, api, shoppro]
+env: spapro
+steps:
+  - api:
+      call: "POST /api/login"
+      body: { username: "${username}", password: "${password}" }
+      expect: { status: 200 }
+      capture: { token: "data.token" }
+  - api:
+      call: "POST /api/cart/clear"
+      headers: { Authorization: "Bearer ${token}" }
+      expect: { status: 200 }
+  - api:
+      call: "POST /api/cart/add"
+      headers: { Authorization: "Bearer ${token}" }
+      body: { sku: "SKU-ATK-1", qty: 2 }
+      expect: { status: 200 }
+  - api:
+      call: "POST /api/checkout"
+      headers: { Authorization: "Bearer ${token}" }
+      body: { coupon: "FULL100" }
+      expect: { status: 200, data.discount: 30, data.payable: 70 }
+  - api:
+      call: "POST /api/cart/add"
+      headers: { Authorization: "Bearer ${token}" }
+      body: { sku: "SKU-ATK-1", qty: 2 }
+      expect: { status: 200 }
+  - api:
+      call: "POST /api/checkout"
+      headers: { Authorization: "Bearer ${token}" }
+      body: { coupon: "FULL100" }
+      expect: { status: 409, msg: "contains: 使用过" }

@@ -38,18 +38,36 @@ async function go() {
   exitCode.value = null
   try {
     const { job_id } = await api.run(env.value, mod.value || undefined)
+    const finish = (code) => {
+      if (exitCode.value !== null) return
+      exitCode.value = code
+      running.value = false
+      setTimeout(() => api.runs().then(rs => { if (rs[0]) lastRunId.value = rs[0].run_id }), 1500)
+    }
     const es = new EventSource(`/api/jobs/${job_id}/stream`)
     es.addEventListener('log', e => {
       logs.value.push(JSON.parse(e.data).line)
       if (logs.value.length > 500) logs.value.splice(0, logs.value.length - 500)
     })
     es.addEventListener('done', e => {
-      exitCode.value = JSON.parse(e.data).exit_code
-      running.value = false
       es.close()
-      setTimeout(() => api.runs().then(rs => { if (rs[0]) lastRunId.value = rs[0].run_id }), 1500)
+      finish(JSON.parse(e.data).exit_code)
     })
-    es.onerror = () => { if (!running.value) return }
+    es.onerror = () => {
+      // 断流不等于任务结束：关流后轮询 job 状态，避免页面永远卡在运行中
+      es.close()
+      logs.value.push('[stream] 连接中断，切换为状态轮询')
+      const timer = setInterval(async () => {
+        try {
+          const s = await fetch(`/api/jobs/${job_id}`).then(r => r.json())
+          if (s.done) { clearInterval(timer); finish(s.exit_code) }
+        } catch {
+          clearInterval(timer)
+          running.value = false
+          ElMessage.error('无法获取任务状态')
+        }
+      }, 1000)
+    }
   } catch (e) {
     ElMessage.error(String(e.message || e))
     running.value = false

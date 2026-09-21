@@ -1,0 +1,12 @@
+scenario: 页面完成加购用券下单并显示待支付
+module: order
+priority: P0
+tags: [ui, e2e, shoppro]
+env: spapro
+steps:
+  - ui:
+      action: 打开 http://127.0.0.1:8788/ ，用 qa/secret123 登录
+      expect: 主界面出现"自动化测试课"和"茶叶礼盒"两个货架条目，购物车区显示"空"
+  - ui:
+      action: 点击"自动化测试课"的加入购物车按钮两次，在券码输入框填 MIN200，点击下单按钮
+      expect: 弹出提示包含"下单成功"和订单号（SP- 开头），应付金额为 50 元；订单列表出现该订单且状态为 pending

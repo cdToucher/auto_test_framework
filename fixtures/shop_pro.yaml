@@ -1,0 +1,3 @@
+# 券商城下单演示数据：qty=2 × 单价 50 元 = 100，SAVE10 减 10 后应付 90
+shop_sku: SKU-ATK-1
+shop_qty: 2

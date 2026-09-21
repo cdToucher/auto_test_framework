@@ -1,8 +1,13 @@
-"""场景文件仓库：树扫描 / 加载 / 带门禁的保存。文件系统是唯一事实源。"""
+"""场景文件仓库：树扫描 / 加载 / 带门禁的保存。文件系统是唯一事实源。
+
+路径解析统一走 atk.layout：legacy 项目在 scenarios/，init 新项目在 .atk/scenarios/。
+"""
 import os
 from pathlib import Path
 
 import yaml
+
+from .. import layout
 
 SCENARIO_EXTS = {".yaml", ".yml"}
 
@@ -16,7 +21,7 @@ class ConflictError(Exception):
 
 
 def _safe_rel(root: Path, rel: str) -> Path:
-    base = root / "scenarios"
+    base = layout.scenarios_dir(root)
     p = (base / rel).resolve()
     if not p.is_relative_to(base.resolve()):
         raise ValueError(f"路径越界: {rel}")
@@ -25,7 +30,7 @@ def _safe_rel(root: Path, rel: str) -> Path:
 
 def scan_tree(root: Path) -> dict:
     """返回 {"dirs":[{name,path,children}], "scenarios":[{path,name,priority,module,tags,error?}]}。"""
-    root = root / "scenarios"
+    root = layout.scenarios_dir(root)
     scenarios: list[dict] = []
     dirs_by_path: dict[str, dict] = {}
     top = {"dirs": [], "name": "", "path": ""}
@@ -133,9 +138,10 @@ def save_scenario(
     os.replace(tmp, dst)
     if move_to and src.exists() and src != dst:
         src.unlink()
-        # 清理空父目录（保留 scenarios 根）
+        # 清理空父目录（保留场景库根）
+        scen_base = layout.scenarios_dir(root).resolve()
         for parent in src.parents:
-            if parent == (root / "scenarios").resolve() or not parent.is_relative_to((root / "scenarios").resolve()):
+            if parent == scen_base or not parent.is_relative_to(scen_base):
                 break
             try:
                 parent.rmdir()

@@ -1,0 +1,23 @@
+scenario: 登录后可浏览商品货架
+module: shop
+priority: P0
+tags: [smoke, api, shoppro]
+env: spapro
+steps:
+  - api:
+      call: "POST /api/login"
+      body: { username: "${username}", password: "${password}" }
+      expect: { status: 200 }
+      capture: { token: "data.token" }
+  - api:
+      call: "GET /api/products"
+      headers: { Authorization: "Bearer ${token}" }
+      expect:
+        status: 200
+        data.items: "len: 2"
+        data.items.0.sku: SKU-ATK-1
+        data.items.0.price: 50
+        data.items.1.stock: 2
+  - api:
+      call: "GET /api/products"
+      expect: { status: 401, msg: "contains: 未登录" }

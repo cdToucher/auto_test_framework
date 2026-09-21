@@ -41,7 +41,7 @@ description: 根据 atk context/plan 的确定性上下文，为一次需求或�
    - 没有可靠自动化入口的意图保留为 UI intent，等待浏览器实测后 `record`。
 
 4. 写 YAML 草稿：
-   - 新文件只写 `scenarios/<module>/gen-<short-head>-N.yaml`，只增不改旧文件。
+   - 新文件只写入场景库的 `<module>/gen-<short-head>-N.yaml`，只增不改旧文件。场景库位置由 atk 自动探测：init 新项目在 `.atk/scenarios/`，旧项目在 `scenarios/`（以 `atk validate` / `atk run --dry-run` 输出路径为准）。
    - `tags` 必须包含 `ai-generated`，再按需要加 `smoke`、`api`、`e2e`、业务标签。
    - `scenario` 不得与 existing_scenarios 重名。
    - `env` 沿用同模块现有场景；没有参考时用运行环境名称。

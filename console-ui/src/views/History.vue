@@ -17,9 +17,9 @@
   </el-table>
 
   <el-drawer v-model="drawer" :title="cur?.run_id" size="55%">
-    <div v-for="s in cur?.scenarios || []" :key="s.file" style="margin-bottom: 14px">
+    <div v-for="(s, si) in cur?.scenarios || []" :key="si" style="margin-bottom: 14px">
       <div>
-        <el-tag size="small" :type="s.passed ? 'success' : 'danger'">{{ s.passed ? 'PASS' : (s.error_class === 'blocked' ? 'BLOCKED' : 'FAIL') }}</el-tag>
+        <el-tag size="small" :type="verdict(s).type">{{ verdict(s).label }}</el-tag>
         <b style="margin-left: 6px">{{ s.name }}</b>
         <span style="color:#999; margin-left: 8px; font-size: 12px">{{ s.file }} · {{ s.duration_ms }}ms</span>
       </div>
@@ -34,17 +34,34 @@
 
 <script setup>
 import { onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import api from '../api'
 
+const route = useRoute()
 const runs = ref([])
 const loading = ref(true)
 const drawer = ref(false)
 const cur = ref(null)
 
+// error_class 真实取值是 environment 等，不是 blocked；此前判定永不命中
+function verdict(s) {
+  if (s.passed) return { type: 'success', label: 'PASS' }
+  if (s.error_class === 'ui_pending') return { type: 'primary', label: '待实测' }
+  if (s.error_class === 'skipped') return { type: 'info', label: '跳过' }
+  if (['environment', 'ui_unsupported'].includes(s.error_class)) return { type: 'warning', label: '受阻' }
+  return { type: 'danger', label: 'FAIL' }
+}
+
 function show(row) { cur.value = row; drawer.value = true }
 
 onMounted(async () => {
-  try { runs.value = await api.runs() } catch (e) { console.error(e) }
+  try {
+    runs.value = await api.runs()
+    if (route.query.run) {
+      const hit = runs.value.find(r => r.run_id === route.query.run)
+      if (hit) show(hit)
+    }
+  } catch (e) { console.error(e) }
   loading.value = false
 })
 </script>

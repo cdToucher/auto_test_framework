@@ -47,6 +47,7 @@ class ScenarioSummary(BaseModel):
     error_class: str = "none"
     env: str = ""
     duration_ms: int = 0
+    draft: bool = False  # 运行时是否为 ai-generated 草稿（gate 依据记录时点，不被事后移走/改标绕过）
     steps: list[StepSummary] = Field(default_factory=list)
 
 
@@ -56,6 +57,7 @@ class RunRecord(BaseModel):
     title: str = ""
     base_ref: str = ""
     head_ref: str = ""
+    head_commit: str = ""  # plan 时 head 的 commit SHA，gate 比对内容一致性
     affected_files: list[str] = Field(default_factory=list)
     affected_modules: list[str] = Field(default_factory=list)
     planned_scenarios: list[str] = Field(default_factory=list)
@@ -91,6 +93,7 @@ def _dump(rec: RunRecord, path: Path) -> None:
 def create_run(
     base_ref: str = "",
     head_ref: str = "",
+    head_commit: str = "",
     affected_files: list[str] | None = None,
     affected_modules: list[str] | None = None,
     planned_scenarios: list[str] | None = None,
@@ -111,6 +114,7 @@ def create_run(
         title=title,
         base_ref=base_ref,
         head_ref=head_ref,
+        head_commit=head_commit,
         affected_files=affected_files or [],
         affected_modules=affected_modules or [],
         planned_scenarios=planned_scenarios or [],
@@ -165,7 +169,9 @@ def add_evidence(
 
 
 def summarize(result) -> ScenarioSummary:
-    """ScenarioResult -> 可序列化摘要。"""
+    """ScenarioResult -> 可序列化摘要。draft 在运行时刻判定，供 gate 追溯。"""
+    from .drafts import is_draft
+
     return ScenarioSummary(
         name=result.scenario.scenario,
         file=result.scenario.file,
@@ -175,6 +181,7 @@ def summarize(result) -> ScenarioSummary:
         error_class=result.error_class,
         env=result.env,
         duration_ms=result.duration_ms,
+        draft=bool(result.scenario.file) and is_draft(result.scenario.file),
         steps=[
             StepSummary(title=s.title, passed=s.passed, detail=s.detail, error_class=s.error_class)
             for s in result.steps

@@ -10,3 +10,8 @@ reports/
 
 console-ui/node_modules/
 uv.lock
+.DS_Store
+.idea/
+.mypy_cache/
+.workbuddy/
+.codegraph/

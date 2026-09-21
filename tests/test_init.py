@@ -4,7 +4,7 @@ from typer.testing import CliRunner
 
 from atk.cli import app
 
-LAYOUTS = ("skills", ".claude/skills")
+SKILL_DIR = ".atk/skills"  # 单一 skill 布局；AGENTS.md 负责让 AI 可见
 
 
 def _skill_names() -> list[str]:
@@ -17,9 +17,9 @@ def test_init_creates_scaffold(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     r = CliRunner().invoke(app, ["init"])
     assert r.exit_code == 0, r.output
-    assert (tmp_path / "config/environments.yaml").exists()
-    assert (tmp_path / "config/modules.yaml").exists()
-    assert (tmp_path / "scenarios/demo/example.yaml").exists()
+    assert (tmp_path / ".atk/environments.yaml").exists()
+    assert (tmp_path / ".atk/modules.yaml").exists()
+    assert (tmp_path / ".atk/scenarios/demo/example.yaml").exists()
     assert "下一步" in r.output
     # 场景库应可直接通过校验
     v = CliRunner().invoke(app, ["validate"])
@@ -42,71 +42,58 @@ def test_init_installs_skills(tmp_path, monkeypatch):
     r = CliRunner().invoke(app, ["init"])
     assert r.exit_code == 0, r.output
     assert _skill_names(), "包内 skill 为空"
-    for layout in LAYOUTS:
-        for name in _skill_names():
-            p = tmp_path / layout / name / "SKILL.md"
-            assert p.exists(), p
-            assert "atk" in p.read_text(encoding="utf-8")
+    for name in _skill_names():
+        p = tmp_path / SKILL_DIR / name / "SKILL.md"
+        assert p.exists(), p
+        assert "atk" in p.read_text(encoding="utf-8")
 
 
 def test_init_never_overwrites_skills(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     mine: list = []
-    for layout in LAYOUTS:
-        for name in _skill_names():
-            p = tmp_path / layout / name / "SKILL.md"
-            p.parent.mkdir(parents=True)
-            p.write_text("mine", encoding="utf-8")
-            mine.append(p)
+    for name in _skill_names():
+        p = tmp_path / SKILL_DIR / name / "SKILL.md"
+        p.parent.mkdir(parents=True)
+        p.write_text("mine", encoding="utf-8")
+        mine.append(p)
     r = CliRunner().invoke(app, ["init"])
     assert r.exit_code == 0
     for p in mine:
         assert p.read_text(encoding="utf-8") == "mine", p
 
 
-def test_skill_copies_in_sync():
-    """包内 canonical（模板）渲染后与仓库两处副本一致（单源多投，改一处必须同步）。"""
-    from pathlib import Path
-
+def test_package_skill_source_is_self_consistent():
+    """包内单一源：渲染后无模板残留、含核心命令词（仓库内旧布局副本由 atk purge 清理，不再比对）。"""
     from atk.skill_install import DEFAULT_UI_TOOL, render_skill
 
-    repo = Path(__file__).resolve().parent.parent
     for name in _skill_names():
         raw = (res.files("atk.skills") / name / "SKILL.md").read_text(encoding="utf-8")
         canon = render_skill(raw, DEFAULT_UI_TOOL)
-        for copy in (
-            repo / "skills" / name / "SKILL.md",
-            repo / ".claude" / "skills" / name / "SKILL.md",
-        ):
-            assert copy.exists(), f"副本缺失: {copy}"
-            assert copy.read_text(encoding="utf-8") == canon, copy
-        assert "atk smoke" in canon or "atk context" in canon
-        # 副本里不得残留未渲染的模板变量
         assert "{{UI_TOOL}}" not in canon
+        assert "atk smoke" in canon or "atk context" in canon
 
 
-def test_init_installs_to_all_agent_layouts(tmp_path, monkeypatch):
-    """换 Agent 不失效：Claude / Cursor / AGENTS.md 三处都要有。"""
+def test_init_single_layout_and_agents_visibility(tmp_path, monkeypatch):
+    """单一 .atk 布局：不建 .claude/.cursor；AGENTS.md 区块给出文件索引供 AI 加载。"""
     monkeypatch.chdir(tmp_path)
     r = CliRunner().invoke(app, ["init"])
     assert r.exit_code == 0, r.output
     for name in _skill_names():
-        assert (tmp_path / ".claude" / "skills" / name / "SKILL.md").exists()
-        cursor = tmp_path / ".cursor" / "rules" / f"atk-{name}.md"
-        assert cursor.exists(), cursor
-        head = cursor.read_text(encoding="utf-8").splitlines()[:5]
-        assert head[0] == "---" and "alwaysApply: false" in head
-    agents = tmp_path / "AGENTS.md"
-    assert agents.exists()
-    body = agents.read_text(encoding="utf-8")
+        assert (tmp_path / SKILL_DIR / name / "SKILL.md").exists()
+    assert not (tmp_path / ".claude").exists()
+    assert not (tmp_path / ".cursor").exists()
+    assert not (tmp_path / "skills").exists()
+    body = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
     assert "atk smoke" in body and "atk record --last" in body
+    for name in _skill_names():
+        assert f".atk/skills/{name}/SKILL.md" in body  # AI 从 AGENTS.md 能找到正文
 
 
 def test_init_renders_ui_tool(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     r = CliRunner().invoke(app, ["init", "--ui-tool", "playwright"])
     assert r.exit_code == 0, r.output
-    smoke = tmp_path / ".claude" / "skills" / "atk-smoke" / "SKILL.md"
+    smoke = tmp_path / SKILL_DIR / "atk-smoke" / "SKILL.md"
     text = smoke.read_text(encoding="utf-8")
     assert "playwright" in text
     assert "{{UI_TOOL}}" not in text

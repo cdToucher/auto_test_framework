@@ -18,6 +18,13 @@ spashop:
     password: secret123
     test_sku: "SKU-ATK-1"
 
+# 复杂演示：优惠券商城 Pro（python -m examples.shop_pro；回归重跑前 POST /api/dev/reset）
+spapro:
+  base_url: "http://127.0.0.1:8788"
+  vars:
+    username: qa
+    password: secret123
+
 # 正式项目：信飞诉调系统测试环境（Cookie+token 双凭证）
 # 用法：登录后导出两样东西注入环境变量再跑：
 #   export ATK_XF_COOKIE="token=...; orgId=..."   （完整 Cookie，9 条）

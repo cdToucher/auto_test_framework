@@ -1,0 +1,38 @@
+scenario: 支付后的订单不允许取消
+module: order
+priority: P0
+tags: [api, shoppro]
+env: spapro
+steps:
+  - api:
+      call: "POST /api/login"
+      body: { username: "${username}", password: "${password}" }
+      expect: { status: 200 }
+      capture: { token: "data.token" }
+  - api:
+      call: "POST /api/cart/clear"
+      headers: { Authorization: "Bearer ${token}" }
+      expect: { status: 200 }
+  - api:
+      call: "POST /api/cart/add"
+      headers: { Authorization: "Bearer ${token}" }
+      body: { sku: "SKU-ATK-1", qty: 1 }
+      expect: { status: 200 }
+  - api:
+      call: "POST /api/checkout"
+      headers: { Authorization: "Bearer ${token}" }
+      body: { coupon: "PCT20" }
+      expect: { status: 200, data.discount: 10, data.payable: 40, data.status: pending }
+      capture: { orderNo: "data.orderNo" }
+  - api:
+      call: "POST /api/orders/${orderNo}/pay"
+      headers: { Authorization: "Bearer ${token}" }
+      expect: { status: 200, data.status: paid }
+  - api:
+      call: "POST /api/orders/${orderNo}/cancel"
+      headers: { Authorization: "Bearer ${token}" }
+      expect: { status: 409, msg: "contains: paid" }
+  - api:
+      call: "GET /api/orders/${orderNo}"
+      headers: { Authorization: "Bearer ${token}" }
+      expect: { status: 200, data.status: paid }

@@ -22,3 +22,27 @@ def changed_files(base: str, head: str = "HEAD", repo: str = ".") -> list[str]:
     if proc.returncode != 0:
         raise RuntimeError(f"git diff 失败: {proc.stderr.strip()}")
     return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+
+
+def rev_parse(ref: str, repo: str = ".") -> str:
+    """解析引用为 commit SHA；失败抛 RuntimeError。"""
+    proc = subprocess.run(
+        ["git", "-C", repo, "rev-parse", ref],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"git rev-parse {ref} 失败: {proc.stderr.strip()}")
+    return proc.stdout.strip()
+
+
+def uncommitted_files(repo: str = ".") -> list[str]:
+    """工作区未提交（含未跟踪）文件；三点 diff 看不见它们，gate 需提示。"""
+    proc = subprocess.run(
+        ["git", "-C", repo, "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return []
+    return [ln[3:] for ln in proc.stdout.splitlines() if ln.strip()]

@@ -1,0 +1,25 @@
+scenario: 空购物车下单被参数校验拦截
+module: order
+priority: P1
+tags: [negative, api, shoppro]
+env: spapro
+steps:
+  - api:
+      call: "POST /api/login"
+      body: { username: "${username}", password: "${password}" }
+      expect: { status: 200 }
+      capture: { token: "data.token" }
+  - api:
+      call: "POST /api/cart/clear"
+      headers: { Authorization: "Bearer ${token}" }
+      expect: { status: 200 }
+  - api:
+      call: "POST /api/checkout"
+      headers: { Authorization: "Bearer ${token}" }
+      body: {}
+      expect: { status: 422, msg: "contains: 购物车为空" }
+  - api:
+      call: "POST /api/cart/add"
+      headers: { Authorization: "Bearer ${token}" }
+      body: { sku: "SKU-ATK-1", qty: 0 }
+      expect: { status: 422, msg: "contains: 正整数" }

@@ -1,0 +1,17 @@
+scenario: 未知SKU查询返回404
+module: shop
+priority: P1
+tags: [negative, api, shoppro]
+env: spapro
+steps:
+  - api:
+      call: "POST /api/login"
+      body: { username: "${username}", password: "${password}" }
+      expect: { status: 200 }
+      capture: { token: "data.token" }
+  - api:
+      call: "GET /api/products/SKU-NOTHING"
+      headers: { Authorization: "Bearer ${token}" }
+      expect:
+        status: 404
+        msg: "contains: 不存在"

@@ -1,0 +1,8 @@
+scenario: 示例-健康检查
+module: example
+priority: P0
+tags: [smoke]
+steps:
+  - api:
+      call: "GET /health"
+      expect: { status: 200 }

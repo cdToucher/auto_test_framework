@@ -8,7 +8,12 @@ from typing import Any
 import yaml
 from apscheduler.triggers.cron import CronTrigger
 
-FILE = Path("config") / "schedules.yaml"
+from .. import layout
+
+
+def file_of(root: Path) -> Path:
+    """schedules.yaml 跟随布局：legacy config/ 或新 .atk/。"""
+    return layout.modules_file(root).parent / "schedules.yaml"
 
 
 class ScheduleError(Exception):
@@ -16,7 +21,7 @@ class ScheduleError(Exception):
 
 
 def load_tasks(root: Path) -> list[dict[str, Any]]:
-    f = root / FILE
+    f = file_of(root)
     if not f.exists():
         return []
     data = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
@@ -27,7 +32,7 @@ def save_tasks(root: Path, tasks: list[dict[str, Any]]) -> None:
     errs = [e for t in tasks for e in validate_task(t)]
     if errs:
         raise ScheduleError("; ".join(errs))
-    f = root / FILE
+    f = file_of(root)
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(
         yaml.dump({"tasks": tasks}, allow_unicode=True, sort_keys=False,

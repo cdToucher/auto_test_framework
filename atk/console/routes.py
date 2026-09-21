@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from .. import layout
 from . import repo
 from .jobs import BusyError, JobManager
 
@@ -22,7 +23,7 @@ class SaveBody(BaseModel):
 
 
 def _run_summaries(root: Path, limit: int | None = None) -> list[dict]:
-    runs_dir = root / "reports" / "runs"
+    runs_dir = layout.runs_dir(root)
     out = []
     if not runs_dir.exists():
         return out
@@ -95,16 +96,14 @@ def setup(app):
 
         @r.get("/projects")
         def projects():
-            reg.rebuild_index()
             return {"projects": reg.list_projects()}
 
         @r.post("/projects")
         def add_project(body: dict):
             p = Path(str(body.get("path", ""))).expanduser().resolve()
-            if not (p / "scenarios").is_dir():
+            if not layout.scenarios_dir(p).is_dir():
                 raise HTTPException(422, f"{p} 不是有效的 atk 工程（缺少 scenarios/）")
             reg.upsert_project(p)
-            reg.rebuild_index()
             return {"ok": True}
 
         @r.delete("/projects")
@@ -210,6 +209,13 @@ def setup(app):
                 yield f"event: done\ndata: {json.dumps({'type': 'done', 'exit_code': -1})}\n\n"
         return StreamingResponse(gen(), media_type="text/event-stream")
 
+    @r.get("/jobs/{job_id}")
+    def job_status(job_id: str):
+        try:
+            return jobs().status(job_id)
+        except KeyError:
+            raise HTTPException(404, job_id)
+
     # ---------- 历史 ----------
 
     @r.get("/runs")
@@ -218,7 +224,7 @@ def setup(app):
 
     @r.get("/runs/{run_id}/report")
     def run_report(run_id: str):
-        base = (root() / "reports" / "runs").resolve()
+        base = layout.runs_dir(root()).resolve()
         p = (base / run_id / "report.html").resolve()
         if not p.is_file() or not p.is_relative_to(base):
             raise HTTPException(404, run_id)
@@ -232,7 +238,7 @@ def setup(app):
 
     @r.get("/runs/{run_id}/evidence/{name:path}")
     def evidence(run_id: str, name: str):
-        base = (root() / "reports" / "runs" / run_id).resolve()
+        base = (layout.runs_dir(root()) / run_id).resolve()
         p = (base / name).resolve()
         if not p.is_file() or not p.is_relative_to(base):
             raise HTTPException(404, name)
@@ -248,7 +254,7 @@ def setup(app):
 
     @r.get("/environments")
     def get_environments():
-        f = root() / "config" / "environments.yaml"
+        f = layout.env_file(root())
         return {"raw": f.read_text(encoding="utf-8") if f.exists() else ""}
 
     @r.put("/environments")
@@ -262,14 +268,14 @@ def setup(app):
             raise HTTPException(422, f"YAML 解析失败: {e}")
         if data is not None and not isinstance(data, dict):
             raise HTTPException(400, "environments 顶层须为映射")
-        f = root() / "config" / "environments.yaml"
+        f = layout.env_file(root())
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text(raw, encoding="utf-8")
         return {"ok": True}
 
     @r.get("/modules")
     def get_modules():
-        f = root() / "config" / "modules.yaml"
+        f = layout.modules_file(root())
         return {"raw": f.read_text(encoding="utf-8") if f.exists() else ""}
 
     @r.put("/modules")
@@ -283,7 +289,7 @@ def setup(app):
             raise HTTPException(422, f"YAML 解析失败: {e}")
         if data is not None and not isinstance(data, dict):
             raise HTTPException(400, "modules 顶层须为映射")
-        f = root() / "config" / "modules.yaml"
+        f = layout.modules_file(root())
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text(raw, encoding="utf-8")
         return {"ok": True}

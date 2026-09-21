@@ -1,0 +1,13 @@
+scenario: 券商城登录成功颁发token
+module: auth
+priority: P0
+tags: [smoke, api, shoppro]
+env: spapro
+steps:
+  - api:
+      call: "POST /api/login"
+      body: { username: "${username}", password: "${password}" }
+      expect:
+        status: 200
+        data.token: not_null
+        data.user: "${username}"

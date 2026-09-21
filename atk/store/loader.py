@@ -17,7 +17,15 @@ def load_scenarios(root: Path | str = "scenarios") -> tuple[list[Scenario], list
             raw = yaml.safe_load(f.read_text(encoding="utf-8"))
             if not isinstance(raw, dict) or "scenario" not in raw:
                 raise ValueError("根节点不是映射或缺少 scenario 字段")
+            rel_parts = f.relative_to(root).parts
+            # 最近父目录即模块目录：scenarios/<...>/<module>/<file>.yaml
+            dir_module = rel_parts[-2] if len(rel_parts) > 1 else ""
+            # module 缺省时以最近父目录名兜底：目录即模块是控制台浏览口径，
+            # 两者不一致会让 --module 静默选不中场景
+            if dir_module and "module" not in raw:
+                raw = {**raw, "module": dir_module}
             sc = Scenario.from_raw(raw, file=str(f))
+            sc.dir_module = dir_module
             if not sc.steps:
                 raise ValueError("steps 为空，至少需要一个步骤")
             out.append(sc)

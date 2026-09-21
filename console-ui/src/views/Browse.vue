@@ -47,7 +47,9 @@ const treeData = computed(() => [
   { name: '全部场景', path: '', children: tree.value.dirs },
 ])
 const filtered = computed(() =>
-  tree.value.scenarios.filter(s => !curDir.value || s.path.startsWith(curDir.value)),
+  tree.value.scenarios.filter(s =>
+    !curDir.value || s.path === curDir.value || s.path.startsWith(curDir.value + '/'),
+  ),
 )
 
 function onDirClick(node) {

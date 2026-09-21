@@ -31,11 +31,45 @@ li{margin:5px 0}
 </head>
 <body>
 <h1>atk 人机协作使用说明</h1>
-<p class="lead">本文说明当前项目应该如何被人和 AI 一起使用。核心原则是：<b>人只做业务判断，AI 负责流程推进，atk 负责确定性记录和门禁</b>。</p>
+<p class="lead">本文说明当前项目应该如何被人和 AI 一起使用。核心原则是：<b>人只做业务判断，AI 负责流程推进，atk 负责确定性记录和门禁</b>。本版重点：把人工配置门槛压到「一条命令」，并给出复杂 demo 项目供全流程验证。</p>
 
 <div class="note">
-<b>当前边界：</b>atk 当前已经支持 API 场景确定性执行、变更上下文、运行记录、报告和 gate（含 UI 未回填拦截）。<code>ui:</code> 步骤可以写入 YAML，但 <code>atk run</code> 内部尚未真正执行 UI，只标记为「待实测」；UI/E2E 由 AI 使用浏览器工具实测后，通过 <code>atk record --last --from-json</code> 回填证据。<code>atk console</code> 仅供本机回环访问，不需要登录口令；被测服务凭据由环境变量注入。
-实际本地 dogfood 示例见 <a href="spa-shop-dogfood.html">SPA Shop Dogfood 全流程</a>。
+<b>当前边界：</b>atk 已支持 API 场景确定性执行、变更上下文、运行记录、报告和强化版 gate（head commit 内容一致性、未评审草稿、UI 未回填、空结果记录都会拦截）。<code>ui:</code> 步骤可以写入 YAML，但 <code>atk run</code> 内部尚未真正执行 UI，只标记为「待实测」；UI/E2E 由 AI 使用浏览器工具实测后，通过 <code>atk record --last --from-json</code> 回填证据（<code>--status</code> 必须显式给出，无默认值）。<code>atk console</code> 仅供本机回环访问，不需要登录口令；被测服务凭据由环境变量注入，缺失会显式告警而不是静默变空串。
+本地全流程示例：简单版 <a href="spa-shop-dogfood.html">SPA Shop Dogfood</a>，复杂版见下文 §4（shop_pro）。
+</div>
+
+<h2>0. 三条命令起步（人工配置的最低门槛）</h2>
+<p>接入一个新项目，人只需要回答两个问题：<b>被测服务在哪</b>、<b>想先建哪些模块</b>。其余交给 atk 和 AI。</p>
+<pre><code>cd /path/to/被测项目
+
+# ① 一步生成配置 + 首批可跑场景 + Agent skill（只建缺失，绝不覆盖）
+atk init --url http://127.0.0.1:8080 --modules order,coupon
+
+# ② 确认场景库合法、选择条件符合预期（dry-run 不执行）
+atk validate
+atk run --env local --dry-run        # 看清"会跑哪些、用什么环境"
+atk run --env local                  # 健康检查场景应已通过 —— 流程已经转起来了
+
+# ③ 之后由 AI/CI 接手
+atk smoke --base main --title "优惠券下单" --format json</code></pre>
+<table>
+<tr><th>init 参数</th><th>代替了原来的哪步手工配置</th></tr>
+<tr><td><code>--url &lt;base_url&gt;</code></td><td>手改 config/environments.yaml 的 base_url（环境名可用 <code>--env-name</code> 指定，默认 local）。</td></tr>
+<tr><td><code>--modules order,coupon</code></td><td>手写 modules.yaml 条目 + 手建 <code>scenarios/&lt;模块&gt;/</code> 与第一个场景：现在每个模块自动生成一张「健康检查」场景（断言 <code>status: "&lt; 500"</code>，起步只要求服务有响应），目录名即模块名，不会踩 module/目录不一致。</td></tr>
+<tr><td><code>--var token='${env:ATK_TOKEN}'</code></td><td>手改 vars 段。<b>vars 默认为空、username/password 不是必填</b>——token、cookie、api_key 型项目按键值注入自己要的即可（可多次），敏感值写 <code>${env:VAR}</code> 占位符不入库。</td></tr>
+<tr><td>什么都不传</td><td>退回旧行为：生成 demo 示例配置，供照着改（vars 留空 + 注释示例，不再写死 testuser/testpass）。</td></tr>
+</table>
+<div class="note">
+<b>产物收束与 AI 可见性：</b><code>atk init</code> 的全部落盘物收进单一 <code>.atk/</code> 目录
+（environments/modules/scenarios/fixtures/reports/skills/manifest），项目根只多一个
+<code>AGENTS.md</code>——Codex、OpenCode、Claude Code 等主流 TUI/CLI 会自动加载它，
+区块内给出命令速查、硬规则和 <code>.atk/skills/*/SKILL.md</code> 正文索引，AI 由此进入工作流；
+不再创建 <code>.claude/</code>、<code>.cursor/</code> 散落拷贝。<b>反悔用 <code>atk purge</code></b>：
+按 manifest 内容指纹只删 init 生成且未手工改动的物料，你写的场景与改过的配置一律保留。
+历史项目（已有 scenarios/、config/、reports/）自动识别为旧布局，一切命令原样工作。
+</div>
+<div class="ok">
+<b>modules.yaml 现在是可选项。</b>不配置代码→模块映射时，<code>smoke</code> 自动全量执行（慢但绝不漏测）；映射配好后才享受"按变更增量选场景"。凭据永远不入库：环境 vars 用 <code>${env:VAR}</code> 注入，临时参数用 <code>atk run --set key=value</code>（优先级高于 env vars 与 fixture，capture 运行时提取值仍最高）。
 </div>
 
 <h2>1. 一句话分工</h2>
@@ -58,7 +92,7 @@ li{margin:5px 0}
 </tr>
 <tr>
 <td>atk/CI</td>
-<td>输出确定性上下文；执行 YAML 场景；保存 run 记录；生成报告；执行 gate。</td>
+<td>输出确定性上下文；执行 YAML 场景；保存 run 记录；生成报告；执行强化版 gate。</td>
 <td>不内置 LLM 生成命令；不替代人的业务判断。</td>
 </tr>
 </table>
@@ -81,47 +115,34 @@ li{margin:5px 0}
   -> QA 体系测试
   -> 验收</div>
 
-<h2>3. 新项目接入</h2>
-<p>人只需要完成一次基础配置，后续由 AI/CI 按协议使用。</p>
-<pre><code>cd /path/to/被测项目
-atk init
+<h2>3. gate 现在到底拦什么（先建立信任）</h2>
+<p>门禁是这套流程能被依赖的前提，当前 <code>atk gate</code> 的判定全部基于结构化记录，不接受口头结论：</p>
+<table>
+<tr><th>检查项</th><th>结论</th><th>为什么</th></tr>
+<tr><td>变更文件清单与运行记录不一致</td><td><b>拦截</b></td><td>测的不是现在要合的代码，需重新 plan。</td></tr>
+<tr><td>head commit SHA 与记录时点不同</td><td><b>拦截</b></td><td>文件清单没变但内容变了（amend/rebase）同样不能放行。</td></tr>
+<tr><td>存在用例失败（断言/配置错误）</td><td><b>拦截</b></td><td>真实失败或场景写错。</td></tr>
+<tr><td>意图存在 <code>fail/suspect</code></td><td><b>拦截</b></td><td>suspect 必须 QA 定性，不允许沉默。</td></tr>
+<tr><td>UI 意图仍是 <code>pending</code>（未实测回填）</td><td><b>拦截</b></td><td>没测过就不能说通过。</td></tr>
+<tr><td>运行记录里有用例在运行时是 AI 草稿且未评审转正</td><td><b>拦截</b></td><td>判定点取运行时刻+磁盘并集：跑完草稿再 reject 移走也绕不过去。</td></tr>
+<tr><td>记录里没有任何场景结果与意图</td><td><b>拦截</b></td><td>空跑不构成"通过"的证据。</td></tr>
+<tr><td>工作区有未提交文件；环境/账号受阻；开发未整单确认</td><td>仅告警</td><td>提示风险但不代替人决策。</td></tr>
+</table>
+<p>与之配套，<code>atk run</code>/<code>atk smoke</code> 在<b>选中 0 个场景</b>时按受阻处理（exit 2）——模块名打错、场景库为空都不可能"静默全绿"；确需空跑用 <code>--allow-empty</code>。未解析的 <code>${var}</code> 会在发请求前拦截报配置错误，<code>${env:VAR}</code> 缺失会显式告警，拼写错误不再伪装成业务失败。</p>
 
-# 1. 配环境
-$EDITOR config/environments.yaml
+<h2>4. 复杂 demo：优惠券商城 Pro（shop_pro）</h2>
+<p><code>examples/shop_pro.py</code> 是一个刻意做"脏"的演示系统，用来验证 atk 处理真实项目复杂度的能力：登录鉴权、商品库存、购物车校验、<b>五种优惠券规则（满减/折扣/门槛/过期/每人限用）</b>、订单状态机（pending→paid/cancelled，非法迁移 409）。配套 <code>scenarios/shop_pro/</code> 按模块目录组织 13 张场景：<code>auth/</code>（正反登录）、<code>shop/</code>（货架、404、券三态）、<code>order/</code>（金额计算、状态机、重复用券、门槛、库存、空车、UI 闭环）。</p>
+<pre><code># 终端 A：起演示服务（含简易页面，供 AI 浏览器实测 UI 场景）
+python -m examples.shop_pro            # http://127.0.0.1:8788
 
-# 2. 配代码路径到测试模块的映射
-$EDITOR config/modules.yaml
+# 终端 B：沉淀层回归一把梭
+atk validate
+atk run --tags shoppro                 # 11 个 API 场景应全过，UI 场景登记为待实测
+# 回归重跑前重置演示状态（券每人限用一次是真实业务规则）：
+curl -X POST http://127.0.0.1:8788/api/dev/reset</code></pre>
+<p>这条链路覆盖了：fixture 数据（<code>fixtures/shop_pro.yaml</code>）、变量捕获链、整数保留（<code>qty: "${shop_qty}"</code> 注入保持 int 类型）、状态码+业务字段双重断言、以及 <code>ui_pending → AI 实测 → record --from-json → gate</code> 的完整人机接力。端到端自动化版见 <code>tests/test_shop_pro_dogfood.py</code>（含 smoke→拦截→回填→放行全链）。</p>
 
-# 3. 校验
-atk validate</code></pre>
-
-<h3>人需要填写的最小配置</h3>
-<pre><code># config/environments.yaml
-staging:
-  base_url: "https://staging.example.com"
-  vars:
-    username: testuser
-    password: "${env:ATK_PASSWORD}"
-
-# config/modules.yaml
-modules:
-  order:
-    - "src/order/**"
-    - "frontend/src/pages/order/**"</code></pre>
-
-<h3>被测服务凭据与本地控制台</h3>
-<p><code>atk console</code> 固定监听 <code>127.0.0.1</code>，供本机使用，不做登录鉴权。Cookie、token 等是<strong>被测服务</strong>的凭据，应在环境配置中以 <code>${env:VAR}</code> 引用，而不是传给控制台：</p>
-<pre><code># config/environments.yaml
-staging:
-  base_url: "https://staging.example.com"
-  vars:
-    service_cookie: "${env:ATK_SERVICE_COOKIE}"
-    service_token: "${env:ATK_SERVICE_TOKEN}"
-
-# 控制台和它启动的 atk run 都继承这些变量
-ATK_SERVICE_COOKIE="..." ATK_SERVICE_TOKEN="..." atk console</code></pre>
-
-<h2>4. 开发如何使用</h2>
+<h2>5. 开发如何使用</h2>
 <p>开发的交互应尽量短。推荐只给 AI 三类信息：要测的需求、基线分支、环境名。</p>
 <div class="card">
 <h3>开发对 AI 说</h3>
@@ -145,32 +166,24 @@ ATK_SERVICE_COOKIE="..." ATK_SERVICE_TOKEN="..." atk console</code></pre>
 <td><code>atk review --last --by &lt;name&gt; --verdict approve|reject</code></td>
 </tr>
 </table>
-
 <div class="ok">
 <b>给人的输出要短：</b>AI 不应让开发读完整 diff、完整日志或长篇分析。开发只判断业务断言是否正确，以及整次测试结论是否可接受。
 </div>
 
-<h2>5. AI Agent 如何使用</h2>
+<h2>6. AI Agent 如何使用</h2>
 <p>AI 的任务是把一次需求或提交推进成结构化测试记录。不要调用不存在的内置生成命令；用 atk 的确定性命令加自己的代码理解能力。</p>
 
-<h3>5.1 先建单，再补事实</h3>
+<h3>6.1 先建单，再补事实</h3>
 <pre><code># 默认入口：一次完成 plan -> run -> report -> gate，JSON 只输出最终 manifest
 atk smoke --base main --head HEAD --env staging --title "优惠券下单" --format json \
   > /tmp/atk-smoke.json
 
 # 只有发现覆盖不足或要起草场景时，再读取确定性上下文
 atk context --base main --head HEAD --format json > /tmp/atk-context.json</code></pre>
-<p><code>smoke</code> 会写入 <code>.atk/last-run.json</code>。AI 应读取它的 <code>failed_scenarios</code>、<code>intents_pending</code> 和 <code>next</code>，而不是从终端输出手工搬运 run_id。<code>atk plan</code> 仍可单独建运行记录，但不是功能验证的默认入口。</p>
-<p>AI 必须读取：</p>
-<ul>
-<li>变更文件和 patch。</li>
-<li>受影响模块。</li>
-<li>现有场景，避免重复。</li>
-<li>相关 controller/router/service/component/schema。</li>
-<li>需求说明或提交说明中的业务约束。</li>
-</ul>
+<p><code>smoke</code> 会写入 <code>.atk/last-run.json</code>。AI 应读取 manifest 的 <code>failed_scenarios</code>、<code>intents_pending</code> 和 <code>next</code>（next 是可直接执行的命令模板，状态刻意留占位符），而不是从终端输出手工搬运 run_id。<code>atk plan</code> 仍可单独建运行记录，但不是功能验证的默认入口。</p>
+<p>AI 必须读取：变更文件和 patch、受影响模块、现有场景（避免重复）、相关 controller/router/service/component/schema、需求说明或提交说明中的业务约束。</p>
 
-<h3>5.2 生成 API 场景</h3>
+<h3>6.2 生成 API 场景</h3>
 <p>API 场景必须来自代码事实，按证据优先级生成：</p>
 <table>
 <tr><th>证据</th><th>AI 要提取什么</th></tr>
@@ -179,19 +192,9 @@ atk context --base main --head HEAD --format json > /tmp/atk-context.json</code>
 <tr><td>service/handler</td><td>业务分支、状态机、权限、幂等、错误码。</td></tr>
 <tr><td>现有场景</td><td>登录方式、token、fixture、capture 风格。</td></tr>
 </table>
-
-<p>API 场景要求：</p>
-<ul>
-<li>每个场景一个业务意图。</li>
-<li><code>expect</code> 必须包含 <code>status</code> 和关键业务字段。</li>
-<li>不得只断 <code>status: 200</code>。</li>
-<li>不得编造不存在的接口、字段或错误码。</li>
-<li>草稿必须带 <code>ai-generated</code> tag。</li>
-</ul>
-
+<p>API 场景要求：每个场景一个业务意图；<code>expect</code> 必须包含 <code>status</code> 和关键业务字段；不得只断 <code>status: 200</code>；不得编造不存在的接口、字段或错误码；草稿必须带 <code>ai-generated</code> tag；<b>场景所在目录名应与 <code>module</code> 字段一致</b>（目录即模块，否则 <code>--module</code>/影响面分析按字段匹配会落空，validate 会告警）。</p>
 <div class="note">
-<b>断言能力（别再只断 status）：</b>除相等外，<code>expect</code> 还支持比较、包含、正则、长度、类型、枚举。
-字面量以反斜杠开头可转义。
+<b>断言能力（别再只断 status）：</b>除相等外，<code>expect</code> 还支持比较、包含、正则、长度、类型、枚举；字面量以反斜杠开头可转义。
 <pre><code>expect:
   status: 200
   data.orderNo: not_null
@@ -204,7 +207,6 @@ atk context --base main --head HEAD --format json > /tmp/atk-context.json</code>
   data.err: is_null</code></pre>
 复杂值可用列表式：<code>expect: [{ path: data.payAmount, op: lte, value: 90 }]</code>。
 </div>
-
 <pre><code>scenario: 优惠券下单后金额扣减
 module: order
 priority: P0
@@ -223,17 +225,8 @@ steps:
       expect: { status: 200, data.discount: 10 }
       capture: { order_no: "data.orderNo" }</code></pre>
 
-<h3>5.3 生成 E2E/UI 场景</h3>
-<p>E2E 场景也必须来自代码或页面证据。AI 应优先寻找：</p>
-<ul>
-<li>前端路由和页面入口。</li>
-<li>表单字段、按钮、菜单、文案。</li>
-<li><code>data-testid</code>、aria label、稳定文本。</li>
-<li>页面调用的 API 和响应字段。</li>
-</ul>
-
-<p>UI 步骤写业务语义和稳定定位线索，不写坐标，不写“页面正常”。当前 <code>atk run</code> 不执行 UI，所以 UI/E2E 的确定性结果来自 AI 浏览器实测后的 <code>record</code>。</p>
-
+<h3>6.3 生成 E2E/UI 场景</h3>
+<p>E2E 场景也必须来自代码或页面证据：前端路由与页面入口、表单字段/按钮/文案、<code>data-testid</code> 等稳定定位线索、页面调用的 API。UI 步骤写业务语义，不写坐标，不写"页面正常"。当前 <code>atk run</code> 不执行 UI，UI/E2E 的确定性结果来自 AI 浏览器实测后的 <code>record</code>。</p>
 <pre><code>scenario: 页面下单后列表显示待支付
 module: order
 priority: P0
@@ -247,35 +240,34 @@ steps:
       action: 在订单列表搜索刚创建的订单
       expect: 列表出现该订单，状态为待支付，金额已扣减优惠券</code></pre>
 
-<h3>5.4 校验草稿</h3>
-<pre><code># 草稿先做语法与 DSL 校验
-atk validate
+<h3>6.4 校验草稿</h3>
+<pre><code>atk validate
 
 # 人确认 expect 后才转正；reject 必须补 --note
 atk review-draft scenarios/order/gen-abc123-1.yaml --by dev --verdict approve
 
-# 转正后重新建单并执行，--last 自动指向这次最新记录
+# 转正后重新建单并执行
 atk smoke --base main --head HEAD --env staging --title "优惠券下单" --format json</code></pre>
 <p>如果失败，AI 先判断失败类型：</p>
 <table>
 <tr><th>失败类型</th><th>处理</th></tr>
-<tr><td>配置错误</td><td>修正 env、fixture、变量、请求格式。</td></tr>
-<tr><td>环境错误</td><td>记录 blocked 或提示检查环境。</td></tr>
+<tr><td>配置错误（含 <b>变量未解析 ${...}</b>、fixture 缺失、call 格式）</td><td>修正 env、fixture、变量拼写、请求格式；这不是业务失败。</td></tr>
+<tr><td>环境错误（连接/超时，自动重试后仍失败）</td><td>记录 blocked 或提示检查环境；exit 2 不会污染用例结论。</td></tr>
 <tr><td>断言失败</td><td>不要擅自改成 pass；整理证据给人判断。</td></tr>
 <tr><td>UI 待实测（<code>ui_pending</code>）</td><td>用项目配置的浏览器工具实测，并通过 <code>record --last</code> 回填；未回填时 gate 拦截。</td></tr>
+<tr><td>选中 0 个场景</td><td>选择条件写错或场景库为空：先 <code>run --dry-run</code> 核对，空库按 §0 起步。</td></tr>
 </table>
 
-<h2>6. AI 浏览器实测与回填</h2>
+<h2>7. AI 浏览器实测与回填</h2>
 <p>AI 使用项目配置的浏览器工具（<code>atk init</code> 默认写入 <code>ego-browser</code>）完成 UI/E2E intent 后，必须把结论写回 atk 运行记录。</p>
 <pre><code>{
   "title": "页面下单后列表显示待支付",
   "status": "pass",
   "note": "创建订单后在列表查到该订单，状态待支付，金额已扣减优惠券",
   "evidence": ["/tmp/atk-order-list.png"]
-}</code></pre>
+}
 
-<pre><code>atk record --last --from-json /tmp/atk-ui-result.json</code></pre>
-
+atk record --last --from-json /tmp/atk-ui-result.json</code></pre>
 <table>
 <tr><th>status</th><th>何时使用</th><th>要求</th></tr>
 <tr><td>pass</td><td>断言明确成立</td><td>最好带截图证据。</td></tr>
@@ -283,9 +275,9 @@ atk smoke --base main --head HEAD --env staging --title "优惠券下单" --form
 <tr><td>suspect</td><td>AI 不确定，疑似问题</td><td>必须带 note，等待人定性，gate 拦截。</td></tr>
 <tr><td>blocked</td><td>登录、权限、环境、服务不可用</td><td>说明阻塞原因，不得标 pass。</td></tr>
 </table>
-<p><code>pending</code> 由含 <code>ui:</code> 步骤的运行自动登记，不能作为 <code>atk record --status</code> 的值；对同名 title 回填会原地更新该 pending 意图。</p>
+<p><b>status 没有默认值</b>：无论命令行还是 JSON，都必须显式给出——回填即表态。<code>pending</code> 由含 <code>ui:</code> 步骤的运行自动登记，不能作为 record 的值；同名 title 回填会原地更新该 pending 意图（不会重复追加，也不会把旧的 pass 再算一份）。</p>
 
-<h2>7. 完整命令流程</h2>
+<h2>8. 完整命令流程</h2>
 <h3>AI 主导，本地/TUI 中执行</h3>
 <pre><code># 1. 建测试单并跑已有确定性场景（--format json 只输出 manifest，含 next 建议）
 atk smoke --base main --head HEAD --env staging --title "优惠券下单" --format json
@@ -309,16 +301,15 @@ atk review --last --by dev --verdict approve
 # 7. 输出门禁结论
 atk gate --last --format json
 atk report --last</code></pre>
-
 <div class="note">
 <b>run_id 不必手工搬运：</b><code>plan</code> / <code>smoke</code> / <code>run --record-new</code>
 会把 run_id 写入 <code>.atk/last-run.json</code>，后续 <code>record</code> / <code>report</code> /
 <code>review</code> / <code>gate</code> 一律用 <code>--last</code>；<code>atk last</code> 可查看当前操作对象。
+<code>run --record-to</code> 重复执行同一记录是幂等的（按场景覆盖，不累积重复条目）。
 </div>
-
 <div class="ok">
 <b>UI 步骤不再"必然受阻"：</b><code>atk run</code> 遇到 <code>ui:</code> 步骤会标记为
-<b>待实测</b>（既不计失败也不计受阻，不返回 exit 2），并自动登记为 <code>pending</code> 意图。
+<b>待实测</b>（既不计失败也不计受阻），并自动登记为 <code>pending</code> 意图。
 AI 实测后 <code>atk record --last</code> 回填；<b>未回填前 <code>atk gate</code> 拦截</b>。
 门从 run 阶段移到 gate 阶段，既消除误报噪音，也保证"没测过不会说通过"。
 如确需忽略 UI，用 <code>atk run --skip-ui</code>。
@@ -329,34 +320,33 @@ AI 实测后 <code>atk record --last</code> 回填；<b>未回填前 <code>atk g
 atk smoke --base origin/main --head HEAD --env staging --title "$PR_TITLE" \
   --junit reports/junit.xml --format json > reports/atk-smoke.json
 
-# UI 待实测、草稿未转正、断言失败或漂移都会让 gate 返回非 0。
-# 无需引用未定义的 $RUN_ID；需要检查当前记录时用：
+# UI 待实测、草稿未转正、断言失败、变更/内容漂移、空选中都会让 gate/run 返回非 0。
+# 需要检查当前记录时：
 atk last --format json</code></pre>
 
-<h2>8. 防漂移规则</h2>
+<h2>9. 防漂移规则</h2>
 <div class="warn">
 <ul>
 <li>AI 不得编造接口、字段、状态码、页面入口、业务文案。</li>
-<li>AI 不得把环境/账号问题写成业务失败。</li>
-<li>AI 不得把 <code>blocked</code> 改成 <code>pass</code>。</li>
+<li>AI 不得把环境/账号问题写成业务失败，也不得把 <code>blocked</code> 改成 <code>pass</code>。</li>
 <li>AI 不得修改既有场景；草稿只增不改。</li>
-<li>AI 不得跳过 <code>atk validate</code> 和草稿实测。</li>
+<li>AI 不得跳过 <code>atk validate</code> 和草稿实测；回填必须显式给 status。</li>
 <li>人只审业务断言，不承担命令编排和日志归纳。</li>
-<li>CI 只信 atk 运行记录和 gate，不信聊天记录中的口头结论。</li>
+<li>CI 只信 atk 运行记录和 gate，不信聊天记录中的口头结论；gate 同时校验文件清单与 head commit 内容一致性。</li>
 </ul>
 </div>
 
-<h2>9. 相关文件</h2>
+<h2>10. 相关文件</h2>
 <table>
 <tr><th>文件</th><th>用途</th></tr>
 <tr><td><code>docs/AI_AUTHORING_PROTOCOL.md</code></td><td>给 AI/TUI 读取的场景起草协议。</td></tr>
-<tr><td><code>skills/atk-authoring/SKILL.md</code></td><td>Agent skill 形式的 API/E2E 起草规范。</td></tr>
-<tr><td><code>skills/atk-smoke/SKILL.md</code></td><td>Agent skill 形式的整次冒烟流程。</td></tr>
-<tr><td><code>docs/USAGE.md</code></td><td>命令手册。</td></tr>
-<tr><td><code>docs/roles.md</code></td><td>角色和质量门禁规范。</td></tr>
+<tr><td><code>.atk/skills/atk-authoring/</code> / <code>.atk/skills/atk-smoke/</code></td><td>被测项目里的工作流正文（由包内单一源渲染，init 安装、AGENTS.md 索引、purge 清理）。</td></tr>
+<tr><td><code>examples/shop_pro.py</code> + <code>scenarios/shop_pro/</code></td><td>复杂演示系统与其配套场景库（本文 §4）。</td></tr>
+<tr><td><code>tests/test_shop_pro_dogfood.py</code></td><td>全流程自动化 dogfood（smoke→拦截→回填→放行、init 起步、--set）。</td></tr>
+<tr><td><code>docs/USAGE.md</code> / <code>docs/roles.md</code></td><td>命令手册 / 角色和质量门禁规范。</td></tr>
 <tr><td><code>docs/ai-test-roadmap.html</code></td><td>后续优化路线图。</td></tr>
 </table>
 
-<p class="small">更新日期：2026-09-15。本文描述当前项目可执行的人机协作方式。</p>
+<p class="small">更新日期：2026-09-21。本文描述当前项目可执行的人机协作方式；配置门槛、gate 判定与命令行为均已按当日代码实测核对。</p>
 </body>
 </html>
