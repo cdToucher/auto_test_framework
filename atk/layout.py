@@ -53,6 +53,15 @@ def skills_dir(root: Path | str = ".") -> Path:
     return Path(root) / ATK_DIR / "skills"
 
 
+def atk_use_file(root: Path | str = ".") -> Path:
+    """AI 说明书正文，两种布局都固定在 .atk/atk_use.md。
+
+    不放项目根：根级条目被 test_layout_purge 限定为 .atk/ AGENTS.md .gitignore 三件，
+    说明书属于"生成物"，和 last-run.json 一样收在 .atk/ 下。
+    """
+    return Path(root) / ATK_DIR / "atk_use.md"
+
+
 def manifest_file(root: Path | str = ".") -> Path:
     return Path(root) / ATK_DIR / "manifest.json"
 

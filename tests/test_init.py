@@ -74,7 +74,7 @@ def test_package_skill_source_is_self_consistent():
 
 
 def test_init_single_layout_and_agents_visibility(tmp_path, monkeypatch):
-    """单一 .atk 布局：不建 .claude/.cursor；AGENTS.md 区块给出文件索引供 AI 加载。"""
+    """单一 .atk 布局：说明书在 .atk/atk_use.md，AGENTS.md 只留入口指针、不重复正文。"""
     monkeypatch.chdir(tmp_path)
     r = CliRunner().invoke(app, ["init"])
     assert r.exit_code == 0, r.output
@@ -83,10 +83,42 @@ def test_init_single_layout_and_agents_visibility(tmp_path, monkeypatch):
     assert not (tmp_path / ".claude").exists()
     assert not (tmp_path / ".cursor").exists()
     assert not (tmp_path / "skills").exists()
+
     body = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
-    assert "atk smoke" in body and "atk record --last" in body
+    use = (tmp_path / ".atk" / "atk_use.md").read_text(encoding="utf-8")
+    assert ".atk/atk_use.md" in body          # AI 从 AGENTS.md 能找到说明书
+    assert "atk agent" in body                # 不知道下一步跑什么的入口
     for name in _skill_names():
-        assert f".atk/skills/{name}/SKILL.md" in body  # AI 从 AGENTS.md 能找到正文
+        assert f".atk/skills/{name}/SKILL.md" in body
+    # 说明书正文已经移走：AGENTS.md 里不该再有命令清单和硬规则（两处会漂移）
+    assert "atk gate --last --format json" not in body
+    assert "选中 0 个场景" not in body
+    # 命令清单与硬规则在 atk_use.md
+    assert "atk gate --last --format json" in use
+    assert "requires_human" in use
+    assert "选中 0 个场景" in use
+
+
+def test_init_rewrites_atk_use_from_package_source(tmp_path, monkeypatch):
+    """atk_use.md 是生成物：手改过再 init 要重生成，否则说明书会悄悄过期。"""
+    monkeypatch.chdir(tmp_path)
+    CliRunner().invoke(app, ["init"])
+    use = tmp_path / ".atk" / "atk_use.md"
+    use.write_text("我手写的说明\n", encoding="utf-8")
+    r = CliRunner().invoke(app, ["init"])
+    assert r.exit_code == 0, r.output
+    assert "atk gate --last --format json" in use.read_text(encoding="utf-8")
+
+
+def test_init_skill_bodies_are_not_overwritten(tmp_path, monkeypatch):
+    """与说明书相反：skill 正文开发者会改，init 只建缺失。"""
+    monkeypatch.chdir(tmp_path)
+    CliRunner().invoke(app, ["init"])
+    name = _skill_names()[0]
+    skill = tmp_path / SKILL_DIR / name / "SKILL.md"
+    skill.write_text("---\nname: x\ndescription: y\n---\n我的私有流程\n", encoding="utf-8")
+    CliRunner().invoke(app, ["init"])
+    assert "我的私有流程" in skill.read_text(encoding="utf-8")
 
 
 def test_init_renders_ui_tool(tmp_path, monkeypatch):
@@ -110,7 +142,7 @@ def test_init_preserves_existing_agents_md(tmp_path, monkeypatch):
     text = agents.read_text(encoding="utf-8")
     assert text.startswith("# 我的项目规范")
     assert "别乱改。" in text
-    assert "atk smoke" in text
+    assert ".atk/atk_use.md" in text
 
 
 def test_init_agents_md_block_is_idempotent(tmp_path, monkeypatch):

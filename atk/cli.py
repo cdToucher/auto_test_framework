@@ -19,7 +19,7 @@ from .diff_analyzer.git_diff import (
 )
 from .diff_analyzer.modules import classify, load_module_map
 from .drafts import DRAFT_TAG, is_draft, review_draft
-from . import layout
+from . import envelope, layout
 from .executors.runner import RunReport, Runner
 from .generator.context import build_context, commit_log, render_markdown
 from .last_run import read_last_run, resolve_run_id, write_last_run
@@ -493,7 +493,17 @@ def plan(
         raise typer.Exit(code=2)
     write_last_run(project, rec.run_id, base=rec.base_ref, head=rec.head_ref, title=title, created_at=rec.created_at)
     if output_format == "json":
-        typer.echo(json.dumps(_plan_json(rec, affected, groups, reuse, errors), ensure_ascii=False, indent=2))
+        typer.echo(envelope.dumps(
+            "plan",
+            _plan_json(rec, affected, groups, reuse, errors),
+            next_steps=["atk validate"] if errors else ["atk run --dry-run"],
+            blockers=list(errors),
+            # plan 有加载错误也 exit 0（原行为，CI 依赖），所以退出码要显式给，
+            # 不能让契约按 ok=False 推成 2。
+            exit_code=0,
+        ))
+        # 退出码维持原行为（plan 有加载错误也返回 0），阻塞信息走 blockers，
+        # 不在本次改动里悄悄改 CI 依赖的退出码语义。
         raise typer.Exit(code=0)
     typer.echo(f"功能：{title}" if title else "功能：（未命名）")
     typer.echo(f"run_id: {rec.run_id}")
@@ -610,26 +620,27 @@ def record(
 
     if output_format == "json":
         pending_after = sum(1 for i in rec.intents if i.status == "pending")
-        typer.echo(
-            json.dumps(
-                {
-                    "run_id": run_id,
-                    "title": key,
-                    "status": status,
-                    "upserted": upserted,
-                    "evidence": saved,
-                    "evidence_missing": missing,
-                    "pending_intents": pending_after,
-                    "next": (
-                        ["atk gate --last --format json"]
-                        if pending_after == 0
-                        else ["atk record --last --title <下一条意图> --status <pass|fail|suspect|blocked>"]
-                    ),
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
+        typer.echo(envelope.dumps(
+            "record",
+            {
+                "run_id": run_id,
+                "title": key,
+                "status": status,
+                "upserted": upserted,
+                "evidence": saved,
+                "evidence_missing": missing,
+                "pending_intents": pending_after,
+                "next": (
+                    ["atk gate --last --format json"]
+                    if pending_after == 0
+                    else ["atk record --last --title <下一条意图> --status <pass|fail|suspect|blocked>"]
+                ),
+            },
+            # suspect 按定义就是"要人定性"，AI 不得自己判结论
+            requires_human=status == "suspect",
+            human_prompt=(f"意图「{key}」记为 suspect，请开发定性为 fail 或 pass 后再走 gate"
+                         if status == "suspect" else None),
+        ))
 
 
 @app.command()
@@ -668,19 +679,21 @@ def review(
         typer.echo(f"已确认：{run_id} by {by} [{verdict}]" + (f" {note}" if note else ""))
     if output_format == "json":
         status, _last = review_status(rec.reviews)
-        typer.echo(
-            json.dumps(
-                {
-                    "run_id": run_id,
-                    "by": by,
-                    "verdict": verdict,
-                    "review_status": status,
-                    "next": [f"atk gate --last --format json"],
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
+        typer.echo(envelope.dumps(
+            "review",
+            {
+                "run_id": run_id,
+                "by": by,
+                "verdict": verdict,
+                "review_status": status,
+                "next": (["atk gate --last --format json"] if verdict == "approve"
+                         else ["atk agent --format json"]),
+            },
+            # reject 之后要开发者决定改什么，AI 别自行改场景再跑
+            requires_human=verdict == "reject",
+            human_prompt=(f"开发已 reject（{note}），需要人工决定返工范围"
+                          if verdict == "reject" else None),
+        ))
 
 
 @app.command("review-draft")
@@ -762,11 +775,26 @@ def run(
         scs, errors = load_scenarios(root)
         sel = select(scs, module, tag_list, priority)
         if output_format == "json":
-            typer.echo(json.dumps({
-                "dry_run": True,
-                "selected": [_scenario_json(s) for s in sel],
-                "load_errors": errors,
-            }, ensure_ascii=False, indent=2))
+            no_match = [] if sel else ["未选中任何场景（空跑不算通过）"]
+            if errors:
+                nxt = ["atk validate"]
+            elif not sel:
+                nxt = ["atk agent --format json"]
+            else:
+                nxt = ["atk run " + (f"--env {env} " if env else "") + "--record-new"]
+            typer.echo(envelope.dumps(
+                "run",
+                {
+                    "dry_run": True,
+                    "selected": [_scenario_json(s) for s in sel],
+                    "load_errors": errors,
+                },
+                next_steps=nxt,
+                blockers=list(errors) + no_match,
+                ok=not errors and bool(sel),
+                # 退出码沿用原行为：dry-run 只是预览，不作为门禁
+                exit_code=1 if errors else 0,
+            ))
         else:
             for e in errors:
                 typer.secho(f"[跳过] {e}", fg=typer.colors.YELLOW, err=True)
@@ -853,28 +881,38 @@ def run(
         say(f"已并入运行记录 {record_to}")
 
     if output_format == "json":
-        typer.echo(
-            json.dumps(
-                {
-                    "exit_code": report.exit_code,
-                    "env": report.env_name,
-                    "scenarios": {
-                        "total": report.total,
-                        "passed": report.passed_count,
-                        "failed": report.failed_count,
-                        "blocked": report.blocked_count,
-                        "pending_ui": report.pending_ui_count,
-                        "skipped": report.skipped_count,
-                    },
-                    "load_errors": report.load_errors,
-                    "report": str(path) if path else None,
-                    "junit": str(jp) if jp else None,
-                    "run_id": created_run_id or record_to,
+        pending_ui = report.pending_ui_count
+        blocked = report.blocked_count
+        typer.echo(envelope.dumps(
+            "run",
+            {
+                "exit_code": report.exit_code,
+                "env": report.env_name,
+                "scenarios": {
+                    "total": report.total,
+                    "passed": report.passed_count,
+                    "failed": report.failed_count,
+                    "blocked": blocked,
+                    "pending_ui": pending_ui,
+                    "skipped": report.skipped_count,
                 },
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
+                "load_errors": report.load_errors,
+                "report": str(path) if path else None,
+                "junit": str(jp) if jp else None,
+                "run_id": created_run_id or record_to,
+            },
+            next_steps=([f'atk record --last --title "<意图>" --status <pass|fail|suspect|blocked> --note "<证据>"']
+                        if pending_ui else
+                        ["atk agent --format json"] if blocked else
+                        ["atk gate --last --format json"]),
+            blockers=(list(report.load_errors) +
+                      ([f"{blocked} 个场景受阻（blocked）"] if blocked else [])),
+            ok=report.exit_code == 0 and not blocked,
+            exit_code=report.exit_code,
+            requires_human=bool(blocked),
+            human_prompt=(f"{blocked} 个场景 blocked，多为环境/凭据问题，需要人排查后重跑"
+                          if blocked else None),
+        ))
     raise typer.Exit(code=report.exit_code)
 
 
@@ -913,7 +951,13 @@ def context(
         raise typer.Exit(code=0)
 
     if output_format == "json":
-        body = json.dumps(ctx, ensure_ascii=False, indent=2)
+        body = envelope.dumps(
+            "context", ctx,
+            next_steps=["atk validate"],
+            requires_human=True,
+            human_prompt=("介入点 1：草稿的 expect 必须开发审定业务正确性，"
+                          "用 atk review-draft <草稿.yaml> --by <人> --verdict approve|reject 落盘"),
+        )
     else:
         body = render_markdown(ctx)
     next_steps = (
@@ -950,7 +994,7 @@ def last(
         )
         raise typer.Exit(code=2)
     if output_format == "json":
-        typer.echo(json.dumps(data, ensure_ascii=False, indent=2))
+        typer.echo(envelope.dumps("last", data, next_steps=["atk gate --last --format json"]))
         raise typer.Exit(code=0)
     typer.echo(f"run_id: {data['run_id']}")
     for k in ("title", "base", "head", "env", "created_at"):
@@ -977,9 +1021,8 @@ def report(
         typer.secho(str(e), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
     if output_format == "json":
-        typer.echo(
-            json.dumps({"run_id": run_id, "report": str(out)}, ensure_ascii=False, indent=2)
-        )
+        typer.echo(envelope.dumps("report", {"run_id": run_id, "report": str(out)},
+                                  next_steps=["atk gate --last --format json"]))
     else:
         typer.echo(f"报告：{out}")
 
@@ -1012,7 +1055,27 @@ def gate(
         raise typer.Exit(code=2)
 
     if output_format == "json":
-        typer.echo(json.dumps(_gate_json(passed, verdicts, review_line, _rec), ensure_ascii=False, indent=2))
+        payload = _gate_json(passed, verdicts, review_line, _rec)
+        rev_status, _rev = review_status(_rec.reviews)
+        # 门禁看的是记录本身；开发确认是另一件事，放行但没确认时必须把人拉进来
+        need_human = rev_status != "approved"
+        if not passed:
+            nxt = ["atk agent --format json"]      # 拦截原因很多，交回状态机判
+        elif need_human:
+            nxt = ["atk review --last --by <姓名> --verdict approve"]
+        else:
+            nxt = []
+        typer.echo(envelope.dumps(
+            "gate", payload,
+            next_steps=nxt,
+            blockers=list(payload["blocking"]),
+            ok=passed,
+            exit_code=0 if passed else 1,
+            requires_human=need_human,
+            human_prompt=("介入点 2：门禁已放行但开发未整单确认，"
+                          "请 atk review --last --by <姓名> --verdict approve"
+                          if (passed and need_human) else None),
+        ))
         raise typer.Exit(code=0 if passed else 1)
 
     for ok, msg, _warn in verdicts:
@@ -1245,6 +1308,7 @@ def smoke(
 
     if output_format == "json":
         next_steps: list[str] = []
+        hint = ""
         if pending:
             for t in pending:
                 next_steps.append(
@@ -1253,38 +1317,47 @@ def smoke(
                 )
             next_steps.append("atk gate --last --format json")
         elif case_fail:
-            rerun = f"atk smoke --env {env}" if env else "atk smoke"
-            next_steps.append(f"修复失败场景后重跑：{rerun}")
+            next_steps.append(f"atk smoke --env {env}" if env else "atk smoke")
+            hint = "有断言失败场景，先修场景或被测代码再重跑"
         else:
             next_steps.append("atk review --last --by <姓名> --verdict approve")
             next_steps.append("atk gate --last --format json")
-        typer.echo(
-            json.dumps(
-                {
-                    "run_id": run_id,
-                    "title": title,
-                    "exit_code": run_exit if run_exit else gate_exit,
-                    "gate": (None if gate_skipped else (gate_exit == 0)),
-                    "gate_skipped": gate_skipped,
-                    "report": str(run_html),
-                    "latest_report": str(latest_path) if module_reports else None,
-                    "scenarios": {
-                        "total": len(fresh.scenarios),
-                        "failed": len(case_fail),
-                        "pending_ui": sum(
-                            1 for s in fresh.scenarios if s.error_class == "ui_pending"
-                        ),
-                    },
-                    "failed_scenarios": [s.name for s in case_fail],
-                    "intents_pending": pending,
-                    "drafts_unreviewed": drafts,
-                    "full_run": full_run,
-                    "next": next_steps,
+        if drafts:
+            # 未评审草稿挡在 gate 前面，先走人工评审
+            next_steps.insert(0, "atk review-draft <草稿.yaml> --by <姓名> --verdict approve")
+        smoke_exit = run_exit if run_exit else gate_exit
+        typer.echo(envelope.dumps(
+            "smoke",
+            {
+                "run_id": run_id,
+                "title": title,
+                "exit_code": smoke_exit,
+                "gate": (None if gate_skipped else (gate_exit == 0)),
+                "gate_skipped": gate_skipped,
+                "report": str(run_html),
+                "latest_report": str(latest_path) if module_reports else None,
+                "scenarios": {
+                    "total": len(fresh.scenarios),
+                    "failed": len(case_fail),
+                    "pending_ui": sum(
+                        1 for s in fresh.scenarios if s.error_class == "ui_pending"
+                    ),
                 },
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
+                "failed_scenarios": [s.name for s in case_fail],
+                "intents_pending": pending,
+                "drafts_unreviewed": drafts,
+                "full_run": full_run,
+                "next": next_steps,
+                "hint": hint,
+            },
+            blockers=(["执行异常，门禁已跳过，结论不可信"] if gate_skipped else []),
+            ok=smoke_exit == 0,
+            exit_code=smoke_exit,
+            requires_human=bool(drafts),
+            human_prompt=(f"介入点 1：{len(drafts)} 份 AI 草稿未过人工评审，"
+                          "请开发审定 expect 后用 atk review-draft 落盘"
+                          if drafts else None),
+        ))
     else:
         typer.echo("待办清单：")
         if case_fail:
@@ -1550,8 +1623,8 @@ def init(
     for p in skipped:
         typer.echo(f"跳过（已存在） {p}")
     typer.echo(
-        "AGENTS.md 已同步 atk 工作流区块——AI 读它并按其索引加载 .atk/skills/ 正文"
-        f"（UI 工具：{ui_tool}）"
+        f"AGENTS.md 已写入 atk 入口指针，说明书在 {layout.atk_use_file(root).relative_to(root)}"
+        f"（技能正文在 .atk/skills/，UI 工具：{ui_tool}）"
     )
     run_env = env_name if url else "local"
     if url and mods:
@@ -1585,12 +1658,12 @@ def purge(
     ),
     yes: bool = typer.Option(False, "--yes", help="跳过确认"),
 ):
-    """删除本项目中的 atk 生成物料（init 产物 + skill 拷贝 + AGENTS.md atk 区块）。
+    """删除本项目中的 atk 生成物料（init 产物 + 说明书 + skill 拷贝 + AGENTS.md atk 区块）。
 
     安全边界：
     - 只删 .atk/manifest.json 记录过、且内容指纹未变（init 后没手改过）的文件；
       手工编辑过的配置/场景一律保留并提示。
-    - .atk/skills/ 按包内 skill 名单清理（单一布局、命名确定性）。
+    - .atk/skills/ 按包内 skill 名单清理，.atk/atk_use.md 一并收掉（单一布局、命名确定性）。
     - 旧版散落的 .claude/skills、.cursor/rules、根 skills/ 下的 atk 拷贝：
       路径命中命名约定且内容含 atk 标记才删，否则保留提示。
     - scenarios 里你自己新增的场景、reports 历史默认不动（--with-reports 才删）。
@@ -1626,6 +1699,11 @@ def purge(
         p = layout.skills_dir(root) / n / "SKILL.md"
         if p.is_file() and p not in to_delete:
             to_delete.append(p)
+
+    # 说明书正文：init 未记录进 manifest（老版本 init）时也要收掉；手改过的保留
+    use_file = layout.atk_use_file(root)
+    if use_file.is_file() and use_file not in to_delete and use_file not in modified:
+        to_delete.append(use_file)
 
     for p in legacy_skill_paths(root, names):
         if p in to_delete:
@@ -1688,17 +1766,281 @@ def purge(
     raise typer.Exit(code=0)
 
 
+def _entry_health(root: Path) -> list[tuple[str, str]]:
+    """接入完整性：AGENTS.md 指的东西必须真的在。返回 (问题, 修复命令)。
+
+    .atk/ 常被 .gitignore 掉（本仓库就是），克隆后不跑 init，AGENTS.md 里那份指针
+    就指向不存在的文件——AI 会照着读并卡在"文件找不到"上。这里显式报出来。
+    """
+    from . import skill_install
+
+    problems: list[tuple[str, str]] = []
+    try:
+        agents_text = (root / "AGENTS.md").read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        agents_text = ""
+    has_block = skill_install.BEGIN in agents_text
+    use = layout.atk_use_file(root)
+    if not has_block and not use.is_file():
+        problems.append(("项目未接入 atk",
+                         "atk init --url <base_url> --modules <模块名>"))
+    elif has_block and not use.is_file():
+        problems.append((f"AGENTS.md 指向 {use.name} 但文件不存在", "atk init"))
+    try:
+        names = sorted(_package_skill_texts())
+    except RuntimeError:
+        names = []
+    missing = [n for n in names if not (layout.skills_dir(root) / n / "SKILL.md").is_file()]
+    if missing:
+        problems.append((f"技能正文缺失 {missing}", "atk init"))
+    return problems
+
+
+@app.command()
+def agent(
+    project: Path = typer.Option(".", "--project", help="项目根目录"),
+    head: str = typer.Option("HEAD", help="待合并的变更引用"),
+    repo: Path = typer.Option("."),
+    output_format: str = typer.Option("text", "--format", help="输出格式：text|json"),
+):
+    """状态机入口：现在该跑哪条 atk 命令，问它，不必背流程。
+
+    AI 的循环就是：atk agent --format json → 照 next 执行 → 再问一次；
+    看到 requires_human=true 必须停下把 human_prompt 转给人。
+
+    退出码：0=有明确下一步或已放行；2=阻塞（未接入/无场景/门禁不可执行）。
+    """
+    if output_format not in ("text", "json"):
+        raise typer.BadParameter("format 必须是 text|json")
+
+    root = Path(project)
+    L = _layout_paths(root)
+    health = _entry_health(root)
+    problems = [p for p, _ in health]
+    fixes = list(dict.fromkeys(c for _, c in health))
+    state = "not_wired" if health else "ready_to_merge"
+    blockers, next_steps = list(problems), list(fixes)
+    requires_human, human_prompt, run_id, env = False, None, None, ""
+
+    scs: list[Scenario] | None = None
+    if not health:
+        scs, load_errors = load_scenarios(L["root"])
+        blockers += list(load_errors)
+        if not scs:
+            state = "no_scenarios"
+            next_steps = ["atk context --base <基线> --format json"]
+            blockers.append("场景库为空：先按 atk-authoring 起草（只增不改）")
+        elif load_errors:
+            state = "library_broken"
+            next_steps = ["atk validate"]
+
+    if state == "ready_to_merge":
+        run_id, env = _agent_run_state(root, L)
+        if run_id is None:
+            state = "no_run"
+            next_steps = ['atk smoke --title "<功能>" --base <基线> --format json']
+        else:
+            state, extra_next, extra_blockers, requires_human, human_prompt = _agent_run_verdict(
+                root, L, run_id, head, repo, env)
+            next_steps += extra_next
+            blockers += extra_blockers
+
+    exit_code = 2 if blockers else 0
+    payload = {
+        "state": state,
+        "project": str(root.resolve()),
+        "layout": layout.mode(root),
+        "run_id": run_id,
+        "env": env or None,
+        "scenarios_total": (len(scs) if scs is not None else None),
+    }
+    if output_format == "json":
+        typer.echo(envelope.dumps("agent", payload, next_steps=next_steps,
+                                  blockers=blockers, ok=exit_code == 0,
+                                  exit_code=exit_code, requires_human=requires_human,
+                                  human_prompt=human_prompt))
+    else:
+        typer.echo(f"当前状态：{state}")
+        for b in blockers:
+            typer.echo(f"  阻塞：{b}")
+        for n in next_steps:
+            typer.echo(f"  下一步：{n}")
+        if requires_human:
+            typer.echo(f"  需人工：{human_prompt}")
+        if not blockers and not next_steps:
+            typer.echo("  门禁已放行且开发已确认，可以合并。")
+    raise typer.Exit(code=exit_code)
+
+
+def _agent_run_state(root: Path, L: dict[str, Path]) -> tuple[Optional[str], str]:
+    data = read_last_run(root)
+    if not data or not data.get("run_id"):
+        return (None, "")
+    return (str(data["run_id"]), str(data.get("env") or ""))
+
+
+def _agent_run_verdict(root: Path, L: dict[str, Path], run_id: str, head: str,
+                       repo: Path, env: str) -> tuple[str, list[str], list[str], bool, Optional[str]]:
+    """已有运行记录时，按 gate 的口径给出状态与下一步。"""
+    try:
+        rec = load_run(run_id, str(L["runs_dir"]))
+    except KeyError as e:
+        # 指针还在、记录已没了（清过 reports/runs 就会这样）：必须给出路，
+        # 否则 AI 拿到 blocker 却没有可执行的 next，只能原地卡住。
+        detail = str(e.args[0]) if e.args else f"记录 {run_id} 不可用"
+        return ("run_missing", ['atk smoke --title "<功能>" --base <基线> --format json'],
+                [f"last-run 指针指向的记录不存在：{detail}"], False, None)
+    rerun = [f"atk run --env {env} --record-new"] if env else ["atk run --record-new"]
+    pending = [i.title for i in rec.intents if i.status == "pending"]
+    drafts = [s.name for s in rec.scenarios
+              if (s.file and is_draft(s.file)) or (s.draft and s.file and not Path(s.file).exists())]
+    case_fail = [s.name for s in rec.scenarios
+                 if not s.passed and s.error_class in ("assertion", "config")]
+    blocked = [s.name for s in rec.scenarios
+               if not s.passed and s.error_class not in ("assertion", "config", "ui_pending", "skipped")]
+    try:
+        passed, verdicts, _line, _rec = _do_gate(run_id, head, repo, L["runs_dir"])
+        gate_blockers = [msg for ok, msg, _w in verdicts if not ok]
+    except (KeyError, RuntimeError) as e:
+        return ("gate_unavailable", [], [f"门禁不可执行：{e}"], False, None)
+    review, _last = review_status(rec.reviews)
+
+    if drafts:
+        return ("await_expect_review",
+                ["atk review-draft <草稿.yaml> --by <姓名> --verdict approve"],
+                [f"{len(drafts)} 份 AI 草稿未过人工评审"], True,
+                f"介入点 1：请开发审定这些草稿的 expect：{', '.join(drafts[:5])}")
+    if pending:
+        return ("ui_pending",
+                [f'atk record --last --title "{t}" --status <pass|fail|suspect|blocked> --note "<证据>"'
+                 for t in pending],
+                [f"{len(pending)} 条 UI 意图未回填实测结论"], False, None)
+    if blocked:
+        return ("run_blocked", rerun, [f"{len(blocked)} 个场景受阻（blocked）"], True,
+                f"环境/凭据问题需要人排查后重跑：{', '.join(blocked[:5])}")
+    if case_fail:
+        return ("cases_failing", rerun, [f"{len(case_fail)} 个场景断言失败"], False, None)
+    if not passed:
+        return ("gate_blocking", ["atk agent --format json"], list(gate_blockers), False, None)
+    if review != "approved":
+        return ("await_run_review", ["atk review --last --by <姓名> --verdict approve"], [], True,
+                "介入点 2：门禁已放行，需要开发整单确认后才能合并")
+    return ("ready_to_merge", [], [], False, None)
+
+
 @app.command("console")
 def console_cmd(
-    port: int = typer.Option(8900, help="监听端口"),
+    port: Optional[int] = typer.Option(
+        None, "--port", "-p",
+        help="监听端口。默认 8900；0=自动挑空闲端口；--stop 不给则停掉该模式下全部"),
     g: bool = typer.Option(False, "--global", "-g", help="全局聚合模式"),
     project_root: Path = typer.Option(None, help="项目根目录（默认当前目录）"),
     job_timeout: float = typer.Option(300.0, help="单任务超时秒数"),
+    background: bool = typer.Option(
+        False, "--background", "-d", help="后台常驻：立即返回地址，关终端不影响"),
+    stop: bool = typer.Option(False, "--stop", help="停止后台控制台（连带其子控制台）"),
+    status: bool = typer.Option(False, "--status", help="查看在跑的控制台（无在跑的 exit 1）"),
+    logs: bool = typer.Option(False, "--logs", help="打印后台日志尾部"),
 ):
-    """启动 Web 控制台（本机 127.0.0.1）。"""
-    from .console import serve
+    """启动 Web 控制台（只监听 127.0.0.1），并打印可打开的地址。
 
-    serve(port=port, global_mode=g, project_root=project_root, job_timeout=job_timeout)
+    前台会阻塞在 serve()；要后台常驻用 -d，之后 --status / --stop 管理。
+    """
+    from .console import daemon, serve
+
+    root = (project_root or Path.cwd()).resolve()
+    if [status, stop, logs].count(True) > 1:
+        raise typer.BadParameter("--status / --stop / --logs 一次只能给一个")
+    if status:
+        raise typer.Exit(code=_console_status(root, g))
+    if stop:
+        raise typer.Exit(code=_console_stop(root, g, port))
+    if logs:
+        raise typer.Exit(code=_console_logs(root, g, port))
+
+    chosen = 8900 if port is None else port
+    if chosen == 0:
+        chosen = daemon.free_port()
+    if not background:
+        serve(port=chosen, global_mode=g, project_root=root, job_timeout=job_timeout)
+        raise typer.Exit(code=0)
+
+    if not daemon.port_free(chosen):
+        typer.echo(f"端口 {chosen} 已被占用。先 atk console --stop --port {chosen}，"
+                   f"或 --port 0 自动挑空闲端口。", err=True)
+        raise typer.Exit(code=2)
+
+    state = daemon.launch(chosen, g, root, job_timeout)
+    url = str(state["url"])
+    if not daemon.wait_ready(url, int(state["pid"]), timeout=20.0):
+        died = not daemon.process_alive(int(state["pid"]))
+        typer.echo(f"后台控制台{'启动即退出' if died else f'{url} 20s 内未就绪'}，"
+                   f"日志 {state['log']} 尾部：", err=True)
+        typer.echo(daemon.tail(Path(str(state["log"])), 30), err=True)
+        daemon.terminate(state)
+        raise typer.Exit(code=1)
+
+    typer.echo("atk console 已在后台运行")
+    typer.echo(f"  地址：{url}")
+    typer.echo(f"  模式：{'全局聚合' if g else '项目 ' + str(root)}")
+    typer.echo(f"  进程：pid={state['pid']}（自成进程组，其子控制台一并停）")
+    typer.echo(f"  日志：{state['log']}")
+    typer.echo(f"  停止：atk console --stop --port {chosen}")
+    raise typer.Exit(code=0)
+
+
+def _console_status(root: Path, global_mode: bool) -> int:
+    from .console import daemon
+
+    states = daemon.list_states(root, global_mode)
+    d = daemon.state_dir(root, global_mode)
+    if not states:
+        typer.echo(f"没有在跑的控制台（查 {d}/console-*.json）")
+        return 1
+    for s in states:
+        mode = "全局" if s.get("global") else f"项目 {s.get('root')}"
+        typer.echo(f"  {s.get('url')}  pid={s.get('pid')}  {mode}  启动于 {s.get('started_at')}")
+        if s.get("log"):
+            typer.echo(f"        日志 {s['log']}")
+    return 0
+
+
+def _console_stop(root: Path, global_mode: bool, port: Optional[int]) -> int:
+    from .console import daemon
+
+    states = daemon.list_states(root, global_mode)
+    if port is not None:
+        states = [s for s in states if int(s.get("port") or 0) == port]
+        if not states:
+            typer.echo(f"端口 {port} 上没有 atk 登记的后台控制台（可能已退出或本就没起）。")
+            return 1
+    elif not states:
+        typer.echo("没有在跑的控制台。")
+        return 0
+
+    failed = 0
+    for s in states:
+        ok, msg = daemon.terminate(s)
+        typer.echo(f"  {'✓' if ok else '✗'} pid={s.get('pid')} {s.get('url')}：{msg}")
+        failed += 0 if ok else 1
+    return 1 if failed else 0
+
+
+def _console_logs(root: Path, global_mode: bool, port: Optional[int]) -> int:
+    from .console import daemon
+
+    if port is None:
+        states = daemon.list_states(root, global_mode)
+        if len(states) != 1:
+            typer.echo(f"有多个或零个后台控制台，请用 --port 指定其一：{daemon.state_dir(root, global_mode)}")
+            return 2
+        port = int(states[0]["port"])
+    f = daemon.log_file(root, global_mode, port)
+    if not f.is_file():
+        typer.echo(f"没有日志文件：{f}")
+        return 1
+    typer.echo(daemon.tail(f, 50))
+    return 0
 
 
 def main():

@@ -1,48 +1,40 @@
 ---
 name: atk-smoke
-description: 功能级AI主导冒烟测试工作流。当开发者给出功能描述或基线要求验证功能时使用。AI全程主导：atk smoke建单→缺场景按atk-authoring协议补草稿→两处停下请开发确认→浏览器实测回填→gate汇报。
+description: 开发者给一句功能描述或基线、要求验证功能时使用（"帮我测下这次改动"也算）。AI 主导整轮冒烟：建单→按 atk agent 的 next 推进→UI 实测回填→人工确认→报门禁。
 ---
 
-# atk 功能级冒烟工作流（AI 主导）
+# atk 功能级冒烟（AI 主导）
 
-入口：开发者只给功能描述或基线（base），AI 全程主导流程，开发只在两个介入点确认。
+前置：先完整读 `.atk/atk_use.md`。命令、envelope 字段、硬规则都在那份里，本文不重复。
 
-原则：atk 负责确定性环节（建单/执行/门禁）；你（AI）负责流程推进与 UI 实测；所有结论必须回填 atk 记录，禁止只口头汇报。
+## 循环
 
-## 流程
+1. 建单并跑完 API 层：
+   `atk smoke --title "<功能描述>" --base <基线> [--env <环境>] --format json`
+2. 之后不要自己排流程：`atk agent --format json`，照 `next` 逐条执行，跑完再问一次。
+   它会把待实测意图、未评审草稿、该谁确认按序排好。
+3. `requires_human: true` 就停下，把 `human_prompt` 原样转给开发，拿到答复再继续。
+   这两处（审 expect、整单确认）是人的判断，AI 不得代答。
+4. `blockers` 非空先解阻塞（多半是环境/凭据/场景库为空），别硬往下跑。
 
-1. **建单**：在被测仓库根目录执行
-   `atk smoke --title "<功能描述>" --base <基线> [--env <环境>]`
-   拿到 run_id 与复用场景执行结果（plan→run→report→gate 一次完成）。
+## UI 意图实测（next 里每条 atk record 就是一条意图）
 
-2. **缺场景补草稿**：若 smoke 输出显示无复用覆盖或关键意图缺失，
-   按 atk-authoring 协议调 `atk context` 补 API/E2E 草稿（写入场景库 `<module>/gen-*.yaml`——init 新项目在 `.atk/scenarios/`，旧项目在 `scenarios/`，只增不改）。
+- 用 {{UI_TOOL}} 打开目标环境，按**意图标题**操作；意图是业务语言，不是坐标脚本。
+- 关键状态截图存成 PNG（如 `/tmp/atk-<slug>.png`），回填时 `--evidence` 指向它。
+- 状态语义，实测是什么记什么：
+  - `pass` 断言成立 · `fail` 复现了问题（note 必须含重现步骤）
+  - `suspect` 疑似问题，需人定性（atk agent 会因此 requires_human）
+  - `blocked` 环境/权限原因没能执行——不得写成 pass，也不得记成 fail
+- 多条意图用批量回填，省得逐条拼参数：
+  `atk record --last --from-json /tmp/atk-ui-result.json`（JSON 形状见 atk-authoring）
 
-3. **介入点 1——审 expect（停下）**：向开发展示草稿路径与 expect 清单，
-   请开发评审断言业务正确性；评审结论用命令落盘（approve 去 tag 转正，reject 移走留档）：
-   `atk review-draft <草稿路径> --by <评审人> --verdict approve|reject [--note ...]`
-   （reject 必须带 note）。未通过不得入库，未转正草稿参与执行会被 gate 拦截。
+## 收尾
 
-4. **UI 意图实测**（每条无覆盖意图）：
-   - 用 **{{UI_TOOL}}** 打开目标环境页面，按意图操作；
-   - 关键状态截图保存为 PNG 文件（如 `/tmp/atk-<slug>.png`）；
-   - 回填：优先 `atk record --last --from-json <result.json>`；也可用
-     `atk record --last --title "<意图>" --status pass|fail|suspect|blocked --note "<证据与根因>" --evidence <截图路径>`
-   - 状态语义：pass=断言成立；fail=复现问题（note 必须含重现步骤）；suspect=疑似问题需人定性；blocked=环境/权限原因无法执行。
-   - `atk smoke --format json` 输出的 `intents_pending` 就是待实测清单，照它逐条回填。
+两条 next 走完（`review` → `gate`）后，把 gate 的 `blocking`/`warnings` 原文摘要给人，
+重点讲 fail 与 suspect。合不合并由人和 CI 判，AI 不替人下"可以合并"的结论。
 
-5. **介入点 2——整单 review（停下）**：实测全部回填后，请开发整单确认
-   `atk review --last --by <确认人> --verdict approve|reject [--note ...]`（reject 必须带 note）；
-   确认 SLA 24h，超时视为发布阻塞。
+## 禁止
 
-6. **汇报 gate**：`atk gate --last --format json`，向用户报告路径与结论摘要（重点讲 fail/suspect）。
-   gate 只读开发确认状态（告警不拦截，见 roles.md）。
-
-> run_id 不必手工搬运：plan/smoke/run --record-new 会写入 `.atk/last-run.json`，
-> 后续 record/report/review/gate 一律用 `--last`。
-
-## 禁止事项
-
-- 不得跳过 record 直接口头宣称"测试通过"。
-- 不得把 blocked 标成 pass。
-- UI 操作遇到登录态缺失先走页面登录流程，仍不行则记 blocked 并说明。
+- 跳过 `atk record` 口头宣称"测试通过"。
+- 登录态缺失就硬猜结论：先走页面登录流程，仍不行记 `blocked` 并说明缺什么。
+- 为了跑绿去改场景断言或把 `blocked` 调成 `pass`。

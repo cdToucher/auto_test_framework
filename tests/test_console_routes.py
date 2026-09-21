@@ -196,12 +196,16 @@ def test_global_project_child_inherits_target_credentials(tmp_path, monkeypatch)
 
     monkeypatch.setattr(routes.subprocess, "Popen", fake_popen)
     monkeypatch.setenv("ATK_XF_TOKEN", "target-service-token")
+    from atk.console import daemon
+    monkeypatch.setenv(daemon.STATE_ENV, "/tmp/parent-console-state.json")
     client = TestClient(create_app(project_root=tmp_path, global_mode=True))
     response = client.post("/api/projects/open", json={"path": str(project)})
 
     assert response.status_code == 200
     assert launched["env"]["ATK_XF_TOKEN"] == "target-service-token"
     assert "--token" not in launched["argv"]
+    # 父控制台的状态文件位置不能传下去：子进程退出时会按它 unregister
+    assert daemon.STATE_ENV not in launched["env"]
 
 
 def test_config_endpoints(c, proj):

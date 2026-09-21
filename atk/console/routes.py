@@ -126,13 +126,18 @@ def setup(app):
                 port = s.getsockname()[1]
             argv = [sys.executable, "-m", "atk", "console",
                     "--port", str(port), "--project-root", str(p)]
-            subprocess.Popen(
-                argv,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                # 验证服务凭据通过 environments.yaml 的 ${env:VAR} 在子运行中解析。
-                env=os.environ.copy(),
-            )
+            from . import daemon
+
+            # 日志落盘而不是 DEVNULL：子控制台原来既看不见地址也看不见报错，
+            # 挂了就是静默孤儿进程。另外摘掉父进程那份 STATE_ENV，否则子进程退出时
+            # unregister 掉的是父控制台的状态文件。
+            lf = daemon.log_file(p, False, port)
+            lf.parent.mkdir(parents=True, exist_ok=True)
+            child_env = {k: v for k, v in os.environ.items() if k != daemon.STATE_ENV}
+            # 验证服务凭据通过 environments.yaml 的 ${env:VAR} 在子运行中解析。
+            with lf.open("ab") as log:
+                subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT,
+                                 stdin=subprocess.DEVNULL, cwd=str(p), env=child_env)
             return {"url": f"http://127.0.0.1:{port}"}
 
     @r.get("/tree")

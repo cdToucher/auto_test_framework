@@ -36,9 +36,10 @@ atk smoke --base main --title "优惠券下单" --format json
 
 ```text
 <被测项目>/
-├── AGENTS.md                  # AI 入口：命令速查 + 硬规则 + 正文索引（根级仅此与 .gitignore）
+├── AGENTS.md                  # AI 入口，只留指向 .atk/atk_use.md 的窄指针（根级仅此与 .gitignore）
 ├── .gitignore                 # init 幂等维护：只忽略可再生产物，场景库照常入库
 └── .atk/
+    ├── atk_use.md             # 说明书：触发循环 + 命令清单 + envelope 字段 + 硬规则
     ├── environments.yaml      # 环境（vars 默认为空，示例以注释给出）
     ├── modules.yaml           # 代码→模块映射（可选）
     ├── scenarios/<模块>/      # 场景库——YAML 是唯一事实源，照常提交 git
@@ -52,8 +53,11 @@ atk smoke --base main --title "优惠券下单" --format json
 - **旧项目零迁移**：存在 `scenarios/`、`config/`、`reports/` 任一即自动识别为旧布局，
   全部命令原样工作；显式传 `--root/--env-file/--runs-dir` 等参数永远优先。
 - **不创建 `.claude/`、`.cursor/`**：主流 TUI/CLI（Codex、OpenCode、Claude Code 等）都会
-  自动加载项目根 `AGENTS.md`，由其索引指向 `.atk/skills/` 正文，换 Agent 不失效。
+  自动加载项目根 `AGENTS.md`——所以那里必须留指针，但只留指针：命令清单与硬规则集中在
+  `.atk/atk_use.md`（每次 init 由包内源重生成），两处各写一份必然漂移。
   `atk init --ui-tool playwright` 可替换正文里的实测工具名（默认 `ego-browser`）。
+- **AI 不必背流程**：`atk agent --format json` 返回当前 `state`、`blockers`、可直接执行的
+  `next[]`，以及该问人时的 `requires_human` + `human_prompt`。
 - **反悔**：`atk purge` 按 manifest 指纹只删 init 生成且未手工改动的物料，
   你写的场景、改过的配置一律保留；还能清掉旧版散落的 `.claude/.cursor/skills` 拷贝。
 
@@ -195,6 +199,7 @@ curl -X POST http://127.0.0.1:8788/api/dev/reset  # 回归重跑前
 ```bash
 atk console          # 项目模式（当前目录），http://127.0.0.1:8900，路径跟随布局探测
 atk console -g       # 全局模式：注册/管理多个 atk 工程，一键拉起各项目控制台
+atk console -d       # 后台常驻（启动即打印地址），--status / --logs / --stop 管理
 ```
 
 功能：场景树浏览、表单 ⇄ YAML 源码双模式编排（保存前强制校验、mtime 乐观锁防外部覆盖）、

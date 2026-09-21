@@ -96,11 +96,12 @@ atk init        # 只建缺失文件，绝不覆盖：config/、scenarios/、fix
    atk validate && atk run --env staging
    ```
 
-## 4. 命令详解（共 12 个）
+## 4. 命令详解（共 15 个）
 
 | 命令 | 作用 | 常用示例 | 退出码 |
 |---|---|---|---|
-| `atk init` | 建骨架（产物收束 `.atk/`，含 skill 正文与 AGENTS.md 索引，只建缺失） | `atk init` | 0 |
+| `atk init` | 建骨架（产物收束 `.atk/`：说明书 `atk_use.md` + skill 正文；AGENTS.md 只写入口指针） | `atk init --url <base_url> --modules order` | 0 |
+| `atk agent` | 状态机入口：现在该跑哪条命令、卡在哪、要不要问人（AI 用 `--format json`） | `atk agent --format json` | 0 有下一步 / 2 阻塞 |
 | `atk validate` | 场景合法性+重名告警，提交前自查 | `atk validate` | 0 通过 / 1 有错误 |
 | `atk context` | 输出变更上下文包（提交+补丁+模块+现有场景），供 Agent 起草 | `atk context --base main --context-out /tmp/ctx.md` | 0（含无变更）/ 2 git 错误 |
 | `atk plan` | 建运行记录，输出复用清单；Agent 可用 `--format json` | `atk plan --base main --head HEAD --format json` | 0 |
@@ -109,9 +110,23 @@ atk init        # 只建缺失文件，绝不覆盖：config/、scenarios/、fix
 | `atk record` | 回填 UI 意图结论+截图证据；Agent 可用 `--from-json` | `atk record <run_id> --from-json result.json` | 0 / 1 fail/suspect 缺 note / 2 记录不存在 |
 | `atk review` | 开发整单确认（approve/reject，reject 必带 note，只告警不拦截） | `atk review <run_id> --by zhangsan --verdict approve` | 0 确认成功 / 1 reject 缺 --note / 2 verdict 非法·记录不存在 |
 | `atk review-draft` | 评审AI草稿（approve 去 tag 转正，reject 移走留档，未转正进 gate 拦截） | `atk review-draft scenarios/demo/gen-x-1.yaml --by qa --verdict approve` | 0 评审落盘 / 1 reject 缺 --note / 2 verdict 非法·非草稿 |
+| `atk last` | 看最近一次运行记录上下文（`.atk/last-run.json`），Agent 用它确认操作对象 | `atk last --format json` | 0 / 2 暂无记录 |
 | `atk report` | 渲染运行记录为 HTML | `atk report <run_id>` | 0 / 2 |
 | `atk gate` | 合并门禁：变更一致+无失败+无未定性+无未评审草稿；支持 `--format json` | `atk gate <run_id> --format json` | 0 放行 / 1 拦截 / 2 |
-| `atk console` | Web 控制台（需 `[console]`） | `atk console` / `atk console -g` | — |
+| `atk purge` | 删除本项目 atk 生成物料（手改过的保留并提示；`--with-reports` 才删历史） | `atk purge --yes` | 0 |
+| `atk console` | Web 控制台（需 `[console]`）；`-d` 后台常驻，`--status/--logs/--stop` 管理 | `atk console -d` / `atk console --stop` | 0 运行中·已停 / 1 未在跑 / 2 端口占用 |
+
+### 4.1 AI 怎么触发（envelope）
+
+`--format json` 的输出统一平铺一层契约（只增键、不改老键）：
+
+| 字段 | 含义 |
+|---|---|
+| `state` | `agent` 独有，当前卡在哪一步：`not_wired`（未接入/说明书缺失）· `library_broken` · `no_scenarios` · `no_run` · `run_missing`（--last 指针失效）· `await_expect_review` · `ui_pending` · `run_blocked` · `cases_failing` · `gate_blocking` · `gate_unavailable` · `await_run_review` · `ready_to_merge` |
+| `ok` / `exit_code` | 与进程退出码一致：0 通过 · 1 失败或拦截 · 2 受阻/配置错 |
+| `next` | **可直接执行**的 atk 命令列表（散文一律放 `hint`），按序跑完再问一次 `atk agent` |
+| `blockers` | 阻塞原因，非空先处理它 |
+| `requires_human` / `human_prompt` | 两个人工介入点（审 expect、整单确认）的机器可读形式；AI 见此必须停下转述，不得代答 |
 
 `run` 常用过滤：`--module`、`--tags a,b`（交集）、`--priority P1`（P0–P1 全跑）、`--junit out.xml`、`--record-to <id>`、`--record-new`。
 
@@ -184,8 +199,13 @@ steps:
 ## 6. Web 控制台
 
 ```bash
-atk console          # 当前目录项目，http://127.0.0.1:8900
-atk console -g       # 全局模式，管理多工程
+atk console            # 项目模式（当前目录），前台运行并打印地址，Ctrl-C 停止
+atk console -d         # 后台常驻，立即返回地址；定时任务要靠它才真能触发
+atk console -g         # 全局模式，管理多工程
+atk console --status   # 列出在跑的；没有在跑的 exit 1
+atk console --logs     # 后台日志尾部（--port 指定其一）
+atk console --stop     # 停止；不带 --port 则停掉该模式下全部
+atk console --port 0 -d  # 自动挑空闲端口（8900 被占时用这个）
 ```
 
 场景树浏览、表单/源码双模式编排（保存前强制校验）、SSE 实时执行、运行历史、定时任务（`config/schedules.yaml`，需控制台常驻，停机不补跑）。限制：表单保存丢注释。
@@ -196,6 +216,19 @@ atk console -g       # 全局模式，管理多工程
 - 本机控制台不做登录鉴权；被测服务的 Cookie、token 等凭据不应作为控制台口令使用。
 - 被测服务凭据在 `config/environments.yaml` 以 `${env:VAR}` 引用，启动控制台前注入环境变量；控制台后续启动的 `atk run` 会继承这些变量，例如：`ATK_XF_COOKIE="..." ATK_XF_TOKEN="..." atk console`。
 - 路径收敛：场景读写、运行报告、证据、fixture 解析均 `resolve()` 后校验落在工程根内，越界返回 404/配置错误。
+
+### 6.2 后台进程与残留
+
+- 状态与日志：项目模式落在 `<工程根>/.atk/console-<端口>.{json,log}`，全局模式落在 `~/.atk/`；
+  按端口分文件，所以可以同时跑多个控制台。
+- 停止走进程组：`-d` 起的控制台自成会话（`start_new_session`），全局模式点"打开"为某项目拉起的
+  子控制台继承同一进程组，`--stop` 一次全带走。原来这些子进程 stdout 进 DEVNULL、无人回收，
+  父进程一退就被 launchd 收养，端口能占到重启（实测留过一个跑了 12 天的孤儿进程）。
+- 前台起的、以及被"打开"拉起的子控制台也各自登记一条状态（`pgid=0`，只许单进程 kill，
+  绝不 killpg——它和用户的终端同组），因此 `--status` 看得见它们，`--stop --port <端口>` 收得掉。
+- 被 `kill -9` 留下的失效状态文件不必手工清：下次 `--status/--stop` 探到进程已不在就顺手删掉。
+- 卸载 atk 前先 `atk console --stop`：`scripts/uninstall_atk.sh` 会停进程、清 `~/.atk`，
+  但只 `uv tool uninstall` 是清不干净的。
 
 ## 7. 自带 Demo（练手）
 
