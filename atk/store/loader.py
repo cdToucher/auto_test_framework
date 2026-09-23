@@ -40,6 +40,15 @@ def select(
     tags: list[str] | None = None,
     priority: Priority | None = None,
 ) -> list[Scenario]:
+    """按模块/标签/优先级过滤，三个条件同时成立才保留。
+
+    - module：精确相等。模块名来自 modules.yaml 的映射，不是路径通配。
+    - tags：**交集**语义——给定的每个标签都要命中（`--tags smoke,api` 是"且"不是"或"）。
+    - priority：上限语义，选 P1 会连带 P0 一起跑，不是只跑 P1。
+
+    这里不因选中为空而报错：由 CLI 按"选中 0 个场景 = 受阻 exit 2"处理，
+    免得空库和过滤过严两种情况被混成同一种失败。
+    """
     out = scenarios
     if module:
         out = [s for s in out if s.module == module]

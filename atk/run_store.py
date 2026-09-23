@@ -12,11 +12,13 @@ EVIDENCE_DIR = "evidence"
 
 
 class CommitInfo(BaseModel):
+    """plan 时抓的一条提交摘要，只留追溯用得上的两项。"""
     short: str = ""
     subject: str = ""
 
 
 class ReviewRecord(BaseModel):
+    """开发的一次整单确认。多条按时间追加，判定只看最后一条（见 review_status）。"""
     by: str = ""
     verdict: Literal["approve", "reject"] = "approve"
     note: str = ""
@@ -24,6 +26,11 @@ class ReviewRecord(BaseModel):
 
 
 class IntentRecord(BaseModel):
+    """一条覆盖意图的结论，决定 gate 放行还是拦截。
+
+    pending=还没人实测（拦）；fail/suspect=有问题或待定性（拦）；
+    pass=成立（放行）；blocked=环境原因没测成（只告警，不拦）。
+    """
     title: str
     # pending：由含 ui: 步骤的场景在 run 时自动登记，等 AI 实测后 record 回填定性
     status: Literal["pass", "fail", "suspect", "blocked", "pending"] = "pass"
@@ -32,13 +39,22 @@ class IntentRecord(BaseModel):
 
 
 class StepSummary(BaseModel):
+    """步骤级摘要，随 run.yaml 落盘。"""
     title: str
     passed: bool
     detail: str = ""
     error_class: str = "assertion"
+    # 失败那一步的实际返回（截断+脱敏后）。断言消息只说哪条不对，这里给整份现场，
+    # 让人和 AI 不必为了看返回值去重跑一遍。
+    response: str = ""
 
 
 class ScenarioSummary(BaseModel):
+    """场景级摘要。
+
+    draft 是**运行时刻**的草稿判定，必须落盘：事后改文件、摘 tag 都不能把
+    "跑的时候是未评审草稿"这段历史洗掉，gate 就是按这个时点追溯的。
+    """
     name: str
     file: str = ""
     module: str = "default"
@@ -52,6 +68,12 @@ class ScenarioSummary(BaseModel):
 
 
 class RunRecord(BaseModel):
+    """一次运行的完整记录，序列化成 reports/runs/<run_id>/run.yaml。
+
+    生命周期：plan/smoke 建骨架（含 head_commit 供 gate 比对内容一致性）→ run 回填
+    scenarios → record 追加 intents → review 追加 reviews；report 与 gate 都只读它，
+    所以"结论是否可信"完全取决于这份文件，不取决于终端打印过什么。
+    """
     run_id: str
     created_at: str
     title: str = ""
@@ -102,6 +124,11 @@ def create_run(
     reviews: list[ReviewRecord] | None = None,
     runs_dir: Path | str = "reports/runs",
 ) -> RunRecord:
+    """建一条运行记录并立刻落盘。
+
+    run_id 用 `smoke-<时间戳>`，同秒内撞名就追加 -2/-3：同一次需求反复 smoke 是常态，
+    撞号会让两次执行的结果互相覆盖。记录从此刻就存在，后续 run/record/review 都是就地追加。
+    """
     now = dt.datetime.now()
     base_id = f"smoke-{now.strftime('%Y%m%d-%H%M%S')}"
     run_id, n = base_id, 2
@@ -132,6 +159,11 @@ def _run_yaml(run_id: str, runs_dir: Path | str) -> Path:
 
 
 def load_run(run_id: str, runs_dir: Path | str = "reports/runs") -> RunRecord:
+    """读回运行记录。不存在、YAML 损坏、内容为空都抛 KeyError。
+
+    三种情况共用一个异常类型，是为了让 CLI 一律折算成 exit 2（"没测成"），
+    而不是让调用方各写一遍分支、把记录问题误报成用例失败。
+    """
     f = _run_yaml(run_id, runs_dir)
     if not f.exists():
         raise KeyError(f"运行记录不存在: {run_id}")
@@ -145,6 +177,7 @@ def load_run(run_id: str, runs_dir: Path | str = "reports/runs") -> RunRecord:
 
 
 def save_run(rec: RunRecord, runs_dir: Path | str = "reports/runs") -> Path:
+    """整份覆盖写回 run.yaml（记录是单一事实源，不做增量拼接）。"""
     f = _run_yaml(rec.run_id, runs_dir)
     f.parent.mkdir(parents=True, exist_ok=True)
     _dump(rec, f)
@@ -183,7 +216,8 @@ def summarize(result) -> ScenarioSummary:
         duration_ms=result.duration_ms,
         draft=bool(result.scenario.file) and is_draft(result.scenario.file),
         steps=[
-            StepSummary(title=s.title, passed=s.passed, detail=s.detail, error_class=s.error_class)
+            StepSummary(title=s.title, passed=s.passed, detail=s.detail,
+                        error_class=s.error_class, response=s.response)
             for s in result.steps
         ],
     )

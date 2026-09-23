@@ -14,6 +14,11 @@ from .env import EnvConfig, load_env, substitute
 
 @dataclass
 class ScenarioResult:
+    """单个场景的执行结果。
+
+    error_class 是全套口径的枢纽：同一次 run 里，"失败"、"受阻"、"待实测"是三个
+    不同去向（前者算 exit 1，后者分别算 exit 2 和"交给 gate 判"），不能合并成 pass/fail。
+    """
     scenario: Scenario
     passed: bool
     # none           通过
@@ -30,6 +35,8 @@ class ScenarioResult:
 
 @dataclass
 class RunReport:
+    """一次 run 的汇总。计数口径只在这里定义，CLI / JSON / HTML 报告共用，
+    避免每个出口各自算一套"失败数"。"""
     env_name: str = ""
     started_at: str = ""
     results: list[ScenarioResult] = field(default_factory=list)
@@ -38,10 +45,12 @@ class RunReport:
 
     @property
     def total(self) -> int:
+        """本次执行的场景数（含受阻与待实测）。"""
         return len(self.results)
 
     @property
     def passed_count(self) -> int:
+        """全部步骤断言成立的场景数。"""
         return sum(1 for r in self.results if r.passed)
 
     @property
@@ -74,11 +83,16 @@ class RunReport:
 
     @property
     def environment_errors(self) -> int:
+        """纯环境异常数。它是 blocked_count 的子集——受阻还包含归类不明的异常。"""
         return sum(1 for r in self.results if r.error_class == "environment")
 
     @property
     def exit_code(self) -> int:
-        # UI 待实测不构成本次执行的失败：定性交给 atk gate（检查意图是否已回填）
+        """进程退出码：1 用例失败或有加载错误，2 受阻，0 其余。
+
+        UI 待实测不算本次执行的失败：定性由 atk gate 检查意图是否已 record 回填，
+        否则一次纯 API 冒烟会被无关的 UI 意图拖成 exit 1。
+        """
         if self.failed_count or self.load_errors:
             return 1
         if self.blocked_count:
@@ -87,6 +101,11 @@ class RunReport:
 
 
 class Runner:
+    """场景执行编排器：加载场景 → 选择 → 按 env 建 client → 逐步执行 → 汇总。
+
+    env 与 httpx.Client 按环境名缓存复用：一个 run 里多个场景常指向同一环境，
+    重复建连会把认证/限流类问题伪装成用例失败。
+    """
     def __init__(
         self,
         env_file: Path | str = "config/environments.yaml",

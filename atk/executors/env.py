@@ -13,6 +13,12 @@ _UNRESOLVED = re.compile(r"\$\{[^}]*\}")
 
 
 class EnvConfig(BaseModel):
+    """一个被测环境的配置（已解析）。
+
+    vars 与 base_url 里的 `${env:NAME}` 在加载期就替换掉——凭据只活在进程环境里，
+    不写进 environments.yaml、更不进仓库。missing_env 记下未设置的引用，
+    让 run 显性告警，而不是静默按空串发请求（那会把配置问题伪装成断言失败）。
+    """
     base_url: str
     vars: dict[str, Any] = {}
     trust_env: bool = False  # 被测环境必须经系统代理访问时置 true
@@ -20,6 +26,11 @@ class EnvConfig(BaseModel):
 
 
 def load_env(config_path: Path | str, name: str) -> EnvConfig:
+    """读取并解析 environments.yaml 里的指定环境；未定义则抛 KeyError。
+
+    调用方（_do_run）把它折算成 exit 2：环境名写错属于"没测成"，
+    和断言不过（exit 1）是两件事，混成一个退出码 CI 就没法分流。
+    """
     data = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
     if name not in data:
         raise KeyError(f"环境 '{name}' 未在 {config_path} 中定义")

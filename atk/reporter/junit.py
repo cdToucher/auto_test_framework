@@ -41,6 +41,10 @@ def write_junit(report, out_path: Path | str) -> Path:
                 "failure",
                 {"message": f"[{r.error_class}] {detail}"[:300], "type": r.error_class},
             )
-            f.text = "\n".join(f"{s.title}: {s.detail}" for s in r.steps)
+            f.text = "\n".join(
+            f"{s.title}: {s.detail}"
+            + (f"\n实际返回: {s.response}" if s.response else "")
+            for s in r.steps
+        )
     ET.ElementTree(suites).write(out_path, encoding="utf-8", xml_declaration=True)
     return out_path

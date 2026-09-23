@@ -58,6 +58,50 @@ def test_commit_log_multiline_body_and_files(repo):
     assert "支持按 skuId 创建订单" in cs[0]["body"]
 
 
+#: 判重材料的样本：一条 API 步 + 一条 UI 步
+_EXISTING = """
+scenario: 下单后可查询到订单
+module: order
+priority: P0
+tags: [smoke]
+steps:
+  - api:
+      call: "POST /api/orders"
+      expect: { status: 200, data.orderNo: not_null }
+  - ui:
+      action: 打开订单列表
+      expect: 出现刚创建的订单
+"""
+
+
+def _one_existing(repo, tmp_path):
+    scen = tmp_path / "scenarios" / "order"
+    scen.mkdir(parents=True)
+    (scen / "existing.yaml").write_text(_EXISTING, encoding="utf-8")
+    ctx = _ctx(tmp_path)
+    return ctx, ctx["existing_scenarios"]["order"][0]
+
+
+def test_existing_scenarios_carry_dedup_material(repo, tmp_path):
+    """判重要一步到位：calls + 逐步 expects + file。
+    只给 calls 时 Agent 无法判断"同接口"断的是不是同一件事，只能另写一条重复场景。"""
+    _ctx_, s = _one_existing(repo, tmp_path)
+    assert s["calls"] == ["POST /api/orders", "ui: 打开订单列表"]
+    assert "status" in s["expects"][0] and "data.orderNo: not_null" in s["expects"][0]
+    assert s["expects"][1] == "出现刚创建的订单"
+    assert s["file"].endswith("order/existing.yaml")
+    assert len(s["calls"]) == len(s["expects"])  # 索引对齐，才能 call -> expect 成对读
+
+
+def test_render_markdown_pairs_calls_with_expects(repo, tmp_path):
+    """markdown 版给人/提示词读，同样得看见断言，不能只剩接口名。"""
+    ctx, _s = _one_existing(repo, tmp_path)
+    md = render_markdown(ctx)
+    assert "POST /api/orders -> " in md
+    assert "ui: 打开订单列表 -> 出现刚创建的订单" in md
+    assert "order/existing.yaml" in md
+
+
 def test_render_markdown_contains_all_sections(repo, tmp_path):
     md = render_markdown(_ctx(tmp_path))
     for fragment in ("## 提交记录", "feat: 新增下单接口", "src/api.py", "模块 `order`"):

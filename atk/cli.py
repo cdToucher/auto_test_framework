@@ -25,9 +25,12 @@ from .generator.context import build_context, commit_log, render_markdown
 from .last_run import read_last_run, resolve_run_id, write_last_run
 from .skill_install import (
     DEFAULT_UI_TOOL,
+    installed_path,
     install_skills,
     legacy_skill_paths,
+    legacy_use_files as legacy_atk_use_files,
     remove_agents_block,
+    use_file as atk_use_file,
 )
 from .reporter.html_reporter import render_html, render_run_html
 from .reporter.junit import write_junit
@@ -722,6 +725,32 @@ def review_draft_cmd(
     typer.echo(msg)
 
 
+#: 终端只给这么长的响应现场；完整内容留在 run.yaml 与 HTML 报告里
+CONSOLE_BODY_LIMIT = 1200
+
+
+def _failure_lines(steps: list[Any]) -> list[str]:
+    """失败现场行：断言消息全文 + 实际返回，各占整行。
+
+    原来这些被压成一行再砍到 120 字符，等于把"哪条断言不对、服务端到底返回了什么"
+    切掉了——失败反而没法定位，只能改代码重跑。
+    """
+    out: list[str] = []
+    for s in steps:
+        if s.passed or not (s.detail or s.response):
+            continue
+        out.append(f"    ✗ {s.title}")
+        if s.detail:
+            out.append(f"      {s.detail}")
+        if s.response:
+            body = (
+                s.response if len(s.response) <= CONSOLE_BODY_LIMIT
+                else s.response[:CONSOLE_BODY_LIMIT] + " …（完整响应见报告与 run.yaml）"
+            )
+            out.append(f"      实际返回: {body}")
+    return out
+
+
 @app.command()
 def run(
     env: Optional[str] = typer.Option(
@@ -811,11 +840,10 @@ def run(
             mark = "…"
         else:
             mark = "✓" if r.passed else "✗"
-        last = r.steps[-1].detail if r.steps else r.error_class
-        suffix = "" if r.passed else f" —— {r.error_class}: {last[:120]}"
-        say(
-            f"{mark} [{r.scenario.priority.value}] {r.scenario.scenario}{suffix}"
-        )
+        say(f"{mark} [{r.scenario.priority.value}] {r.scenario.scenario}"
+            + ("" if r.passed else f" —— {r.error_class}"))
+        for line in _failure_lines(r.steps):
+            say(line)
 
     try:
         report, path, jp = _do_run(
@@ -883,6 +911,13 @@ def run(
     if output_format == "json":
         pending_ui = report.pending_ui_count
         blocked = report.blocked_count
+        # 失败现场直接进 JSON：不然 AI 只能读 reports/runs/<id>/run.yaml 才知道哪条断言、
+        # 实际返回了什么，多数时候它只会照着 exit_code 报"失败了"。
+        failed_steps = [
+            {"scenario": r.scenario.scenario, "step": s.title,
+             "detail": s.detail, "response": s.response}
+            for r in report.results for s in r.steps if not s.passed
+        ][:10]
         typer.echo(envelope.dumps(
             "run",
             {
@@ -896,6 +931,7 @@ def run(
                     "pending_ui": pending_ui,
                     "skipped": report.skipped_count,
                 },
+                "failed_steps": failed_steps,
                 "load_errors": report.load_errors,
                 "report": str(path) if path else None,
                 "junit": str(jp) if jp else None,
@@ -1166,9 +1202,10 @@ def smoke(
             mark = "…"
         else:
             mark = "✓" if r.passed else "✗"
-        last = r.steps[-1].detail if r.steps else r.error_class
-        suffix = "" if r.passed else f" —— {r.error_class}: {last[:120]}"
-        typer.echo(f"{mark} [{r.scenario.priority.value}] {r.scenario.scenario}{suffix}")
+        typer.echo(f"{mark} [{r.scenario.priority.value}] {r.scenario.scenario}"
+                   + ("" if r.passed else f" —— {r.error_class}"))
+        for line in _failure_lines(r.steps):
+            typer.echo(line)
 
     full_run = not affected
     modules_to_run: list[Optional[str]] = list(affected) if affected else [None]
@@ -1383,18 +1420,13 @@ def smoke(
 
 
 def _package_skill_texts() -> dict[str, str]:
-    """包内 skill 单一源（init/purge 共用）；资源缺失抛 RuntimeError。"""
-    try:
-        skills_root = res.files("atk.skills")
-        names = sorted(
-            p.name for p in skills_root.iterdir() if (p / "SKILL.md").is_file()
-        )
-        return {
-            name: (skills_root / name / "SKILL.md").read_text(encoding="utf-8")
-            for name in names
-        }
-    except Exception as e:
-        raise RuntimeError(str(e)) from e
+    """包内 skill 单一源（init/purge 共用）；资源缺失抛 RuntimeError。
+
+    入口文件名可能是特例（说明书叫 atk_use.md），枚举规则统一在 skill_install 里。
+    """
+    from .skill_install import package_skill_texts
+
+    return package_skill_texts()
 
 
 def _sha256(p: Path) -> str:
@@ -1623,7 +1655,7 @@ def init(
     for p in skipped:
         typer.echo(f"跳过（已存在） {p}")
     typer.echo(
-        f"AGENTS.md 已写入 atk 入口指针，说明书在 {layout.atk_use_file(root).relative_to(root)}"
+        f"AGENTS.md 已写入 atk 入口指针，说明书在 {atk_use_file(root).relative_to(root)}"
         f"（技能正文在 .atk/skills/，UI 工具：{ui_tool}）"
     )
     run_env = env_name if url else "local"
@@ -1696,14 +1728,14 @@ def purge(
         )
 
     for n in names:
-        p = layout.skills_dir(root) / n / "SKILL.md"
+        p = installed_path(root, n)
         if p.is_file() and p not in to_delete:
             to_delete.append(p)
 
-    # 说明书正文：init 未记录进 manifest（老版本 init）时也要收掉；手改过的保留
-    use_file = layout.atk_use_file(root)
-    if use_file.is_file() and use_file not in to_delete and use_file not in modified:
-        to_delete.append(use_file)
+    # 说明书与它的旧落位：init 未记录进 manifest（老版本 init）时也要收掉
+    for stale in [atk_use_file(root), *legacy_atk_use_files(root)]:
+        if stale.is_file() and stale not in to_delete and stale not in modified:
+            to_delete.append(stale)
 
     for p in legacy_skill_paths(root, names):
         if p in to_delete:
@@ -1780,7 +1812,7 @@ def _entry_health(root: Path) -> list[tuple[str, str]]:
     except OSError:
         agents_text = ""
     has_block = skill_install.BEGIN in agents_text
-    use = layout.atk_use_file(root)
+    use = atk_use_file(root)
     if not has_block and not use.is_file():
         problems.append(("项目未接入 atk",
                          "atk init --url <base_url> --modules <模块名>"))
@@ -1790,7 +1822,7 @@ def _entry_health(root: Path) -> list[tuple[str, str]]:
         names = sorted(_package_skill_texts())
     except RuntimeError:
         names = []
-    missing = [n for n in names if not (layout.skills_dir(root) / n / "SKILL.md").is_file()]
+    missing = [n for n in names if not installed_path(root, n).is_file()]
     if missing:
         problems.append((f"技能正文缺失 {missing}", "atk init"))
     return problems

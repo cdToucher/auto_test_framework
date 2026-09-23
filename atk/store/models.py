@@ -131,6 +131,7 @@ def parse_expect_value(v: Any) -> tuple[str, Any]:
 
 
 class Priority(str, Enum):
+    """场景优先级。过滤时按"P0..选定档"取上限（选 P1 含 P0），不是精确匹配。"""
     P0 = "P0"
     P1 = "P1"
     P2 = "P2"
@@ -192,6 +193,12 @@ class ApiExpect(BaseModel):
 
 
 class ApiStep(BaseModel):
+    """一个 HTTP 步骤。
+
+    call 是 `METHOD /path`（path 里可以带 `${var}`）；expect 逐条断言；capture 把响应里的
+    值写回变量给后续步骤用。retries 只对**环境类**错误生效——断言失败重试只会把真问题
+    洗成偶发通过，所以默认 1 次重连、断言永不重跑。
+    """
     type: Literal["api"] = "api"
     call: str  # 形如 "POST /api/orders"
     headers: dict[str, str] = Field(default_factory=dict)
@@ -202,6 +209,11 @@ class ApiStep(BaseModel):
 
 
 class UiStep(BaseModel):
+    """一个 UI 步骤：action 是用户意图，expect 是可观察现象（都是自然语言）。
+
+    atk 不驱动浏览器：run 遇到它就停在该步并登记 `ui_pending`，等 AI 用浏览器实测后
+    用 atk record 回填结论；expect 的自动断言排在 M2，现在只作为人/AI 的判据文字。
+    """
     type: Literal["ui"] = "ui"
     action: str
     expect: str | None = None  # 自然语言断言，M2 实现
@@ -301,6 +313,13 @@ def parse_step(raw: dict) -> Step:
 
 
 class Scenario(BaseModel):
+    """一个场景 = YAML 里的一份用例，也是 atk 的最小执行单位。
+
+    字段分工：`module` 决定增量命中（modules.yaml 映射出来的模块名）、`env` 决定默认打
+    哪个环境、`tags` 供过滤且含 `ai-generated` 即视为未评审草稿、`data` 指向 fixture
+    文件。`file` 与 `dir_module` 由 loader 回填，用于报告定位与"目录名和 module 字段
+    不一致"的告警——不是用户手写的。
+    """
     scenario: str
     module: str = "default"
     priority: Priority = Priority.P1
@@ -313,6 +332,11 @@ class Scenario(BaseModel):
 
     @classmethod
     def from_raw(cls, raw: dict, file: str = "") -> "Scenario":
+        """把 YAML dict 转成 Scenario：每个步骤按 key 判 api/ui 类型。
+
+        未知步骤 key 直接抛错（由 loader 汇成加载告警），不静默跳过——
+        少一个步骤的场景会"通过"，但那才是最危险的假绿。
+        """
         raw = dict(raw)
         raw["steps"] = [parse_step(s) for s in raw.get("steps", [])]
         obj = cls(**raw)

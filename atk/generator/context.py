@@ -9,7 +9,7 @@ from pathlib import Path
 from ..diff_analyzer.git_diff import changed_files
 from ..diff_analyzer.modules import classify, load_module_map
 from ..store.loader import load_scenarios
-from ..store.models import ApiStep
+from ..store.models import ApiStep, Step
 
 # 单文件补丁与总量上限，防止大 diff 撑爆提示词
 MAX_PATCH_LINES_PER_FILE = 400
@@ -99,10 +99,25 @@ def file_patches(
     return patches
 
 
+def _step_expect(st: Step) -> str:
+    """一步的断言摘要：查重时"同接口"不够，得看清断的是不是同一件业务事实。"""
+    if isinstance(st, ApiStep):
+        parts = [
+            e.raw or (f"{e.path} {e.op} {e.value}" if e.path else f"status {e.status_op} {e.status}")
+            for e in st.expect
+        ]
+        return ", ".join(p for p in parts if p)
+    return st.expect or ""
+
+
 def existing_scenarios(
     modules: list[str], scenarios_root: Path | str = "scenarios"
 ) -> dict[str, list[dict]]:
-    """汇总受影响模块的现有场景摘要（名称/优先级/标签/步骤调用），供去重与风格对齐。"""
+    """汇总受影响模块的现有场景摘要，供去重与风格对齐。
+
+    带上 file 与逐步 expects：Agent 光看 calls 只能猜"大概重复"，要判"等价"必须能
+    直接看到断言了什么、以及去哪核对，否则它会另写一条平行的重复场景。
+    """
     scs, _ = load_scenarios(scenarios_root)
     out: dict[str, list[dict]] = {}
     for s in scs:
@@ -116,7 +131,9 @@ def existing_scenarios(
                 "name": s.scenario,
                 "priority": s.priority.value,
                 "tags": s.tags,
+                "file": s.file,
                 "calls": calls,
+                "expects": [_step_expect(st) for st in s.steps],
             }
         )
     return out
@@ -187,9 +204,12 @@ def render_markdown(ctx: dict) -> str:
         for mod, scs in ctx["existing_scenarios"].items():
             lines.append(f"### 模块 `{mod}`")
             for s in scs:
-                calls = "；".join(s["calls"]) or "（无步骤）"
+                steps = "；".join(
+                    f"{c} -> {e}" if e else c
+                    for c, e in zip(s["calls"], s["expects"])
+                ) or "（无步骤）"
                 lines.append(
-                    f"- {s['name']}（{s['priority']}，tags: {s['tags']}）：{calls}"
+                    f"- {s['name']}（{s['priority']}，tags: {s['tags']}）`{s['file']}`：{steps}"
                 )
     else:
         lines.append("（这些模块尚无场景）")

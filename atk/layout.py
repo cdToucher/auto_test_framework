@@ -17,54 +17,59 @@ LEGACY_MARKERS = ("scenarios", "config", "reports")
 
 
 def is_legacy(root: Path | str = ".") -> bool:
+    """看根目录有没有 scenarios/ config/ reports/ 任一日目录，有即按旧布局处理。
+
+    只要一个标记就够：老项目常常只提交了 scenarios/ 与 config/，reports/ 被 gitignore，
+    要求三个都在会让它被误判成新布局、凭空多出 .atk/ 双份目录。
+    """
     root = Path(root)
     return any((root / m).is_dir() for m in LEGACY_MARKERS)
 
 
 def mode(root: Path | str = ".") -> str:
+    """当前布局名（legacy / atk），报告与 atk agent 用它说明解析结果。"""
     return "legacy" if is_legacy(root) else "atk"
 
 
 def scenarios_dir(root: Path | str = ".") -> Path:
+    """场景库根目录。"""
     root = Path(root)
     return root / "scenarios" if is_legacy(root) else root / ATK_DIR / "scenarios"
 
 
 def env_file(root: Path | str = ".") -> Path:
+    """environments.yaml 位置（旧布局在 config/ 下）。"""
     root = Path(root)
     return root / "config" / "environments.yaml" if is_legacy(root) else root / ATK_DIR / "environments.yaml"
 
 
 def modules_file(root: Path | str = ".") -> Path:
+    """modules.yaml 位置；schedules.yaml 也按"它的同级目录"派生，两种布局都不用改代码。"""
     root = Path(root)
     return root / "config" / "modules.yaml" if is_legacy(root) else root / ATK_DIR / "modules.yaml"
 
 
 def reports_dir(root: Path | str = ".") -> Path:
+    """报告根目录（HTML / JUnit 落这里）。"""
     root = Path(root)
     return root / "reports" if is_legacy(root) else root / ATK_DIR / "reports"
 
 
 def runs_dir(root: Path | str = ".") -> Path:
+    """运行记录目录：每次 run 一个 <run_id>/run.yaml 子目录。"""
     return reports_dir(root) / "runs"
 
 
 def skills_dir(root: Path | str = ".") -> Path:
+    """技能正文目录。旧布局也固定放 .atk/ 下——它们是 atk 生成物，不参与布局判断。"""
     return Path(root) / ATK_DIR / "skills"
 
 
-def atk_use_file(root: Path | str = ".") -> Path:
-    """AI 说明书正文，两种布局都固定在 .atk/atk_use.md。
-
-    不放项目根：根级条目被 test_layout_purge 限定为 .atk/ AGENTS.md .gitignore 三件，
-    说明书属于"生成物"，和 last-run.json 一样收在 .atk/ 下。
-    """
-    return Path(root) / ATK_DIR / "atk_use.md"
-
-
 def manifest_file(root: Path | str = ".") -> Path:
+    """init 生成物清单+内容指纹（purge 的安全依据）。同样恒在 .atk/ 下。"""
     return Path(root) / ATK_DIR / "manifest.json"
 
 
 def last_run_file(root: Path | str = ".") -> Path:
+    """`--last` 指针文件。恒在 .atk/ 下，与布局无关。"""
     return Path(root) / ATK_DIR / "last-run.json"

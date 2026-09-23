@@ -100,7 +100,7 @@ atk init        # 只建缺失文件，绝不覆盖：config/、scenarios/、fix
 
 | 命令 | 作用 | 常用示例 | 退出码 |
 |---|---|---|---|
-| `atk init` | 建骨架（产物收束 `.atk/`：说明书 `atk_use.md` + skill 正文；AGENTS.md 只写入口指针） | `atk init --url <base_url> --modules order` | 0 |
+| `atk init` | 建骨架（产物收束 `.atk/`；说明书 = `.atk/skills/atk-use/atk_use.md`，可 `@atk_use` 唤出；AGENTS.md 只写入口指针） | `atk init --url <base_url> --modules order` | 0 |
 | `atk agent` | 状态机入口：现在该跑哪条命令、卡在哪、要不要问人（AI 用 `--format json`） | `atk agent --format json` | 0 有下一步 / 2 阻塞 |
 | `atk validate` | 场景合法性+重名告警，提交前自查 | `atk validate` | 0 通过 / 1 有错误 |
 | `atk context` | 输出变更上下文包（提交+补丁+模块+现有场景），供 Agent 起草 | `atk context --base main --context-out /tmp/ctx.md` | 0（含无变更）/ 2 git 错误 |
@@ -129,6 +129,11 @@ atk init        # 只建缺失文件，绝不覆盖：config/、scenarios/、fix
 | `requires_human` / `human_prompt` | 两个人工介入点（审 expect、整单确认）的机器可读形式；AI 见此必须停下转述，不得代答 |
 
 `run` 常用过滤：`--module`、`--tags a,b`（交集）、`--priority P1`（P0–P1 全跑）、`--junit out.xml`、`--record-to <id>`、`--record-new`。
+
+失败现场：断言不通过时，终端与 HTML 报告都会给出「哪条断言、实际值、整份响应」，
+`run --format json` 则放在 `failed_steps[]`（`detail` + `response`），运行记录 `run.yaml` 同步留存。
+响应体上限 4000 字符，且键名命中 token/password/cookie/authorization 等样式的值一律写成 `***`
+——报告会被提交和转发，凭据不入库。
 
 `record` 的 `--status`：`pass`（断言成立）/ `fail`（复现问题，note 写重现步骤）/ `suspect`（疑似，需人定性，gate 拦截）/ `blocked`（环境原因，不拦截）。`fail/suspect` 必须带 note；AI 回填推荐 `--from-json`。
 

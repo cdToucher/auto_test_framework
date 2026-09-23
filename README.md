@@ -36,26 +36,32 @@ atk smoke --base main --title "优惠券下单" --format json
 
 ```text
 <被测项目>/
-├── AGENTS.md                  # AI 入口，只留指向 .atk/atk_use.md 的窄指针（根级仅此与 .gitignore）
+├── AGENTS.md                  # AI 入口，只留指向说明书的窄指针（根级仅此与 .gitignore）
 ├── .gitignore                 # init 幂等维护：只忽略可再生产物，场景库照常入库
 └── .atk/
-    ├── atk_use.md             # 说明书：触发循环 + 命令清单 + envelope 字段 + 硬规则
     ├── environments.yaml      # 环境（vars 默认为空，示例以注释给出）
     ├── modules.yaml           # 代码→模块映射（可选）
     ├── scenarios/<模块>/      # 场景库——YAML 是唯一事实源，照常提交 git
     ├── fixtures/              # 场景 data: 引用的测试数据
     ├── reports/runs/          # 运行记录 + 报告 + 截图证据
-    ├── skills/<名称>/SKILL.md # 工作流正文（atk-smoke / atk-authoring）
+    ├── skills/                # 三个 skill：说明书 + 两份工作流正文
+    │   ├── atk-use/atk_use.md     # 说明书（触发循环/命令/envelope/硬规则）
+    │   ├── atk-smoke/SKILL.md     # 功能级冒烟：AI 主导
+    │   └── atk-authoring/SKILL.md # 场景起草协议（先判重复用再动笔）
     ├── last-run.json          # --last 指针
     └── manifest.json          # init 生成物清单+内容指纹（purge 的安全依据）
 ```
 
 - **旧项目零迁移**：存在 `scenarios/`、`config/`、`reports/` 任一即自动识别为旧布局，
   全部命令原样工作；显式传 `--root/--env-file/--runs-dir` 等参数永远优先。
+- **说明书本身就是一个 skill**：`.atk/skills/atk-use/atk_use.md`（带 frontmatter，说明
+  什么时候该加载它）。入口文件特意不叫 `SKILL.md`——`.atk/skills/` 下三份同名文件用
+  `@` 唤出时分不清是谁，独特的 basename 才能 `@atk_use` 一次命中。它每次 init 由包内源
+  重生成（写歪了会误导下一个 AI）；两份工作流正文则只建不覆盖，因为开发者会改。
 - **不创建 `.claude/`、`.cursor/`**：主流 TUI/CLI（Codex、OpenCode、Claude Code 等）都会
   自动加载项目根 `AGENTS.md`——所以那里必须留指针，但只留指针：命令清单与硬规则集中在
-  `.atk/atk_use.md`（每次 init 由包内源重生成），两处各写一份必然漂移。
-  `atk init --ui-tool playwright` 可替换正文里的实测工具名（默认 `ego-browser`）。
+  说明书里，两处各写一份必然漂移。`atk init --ui-tool playwright` 可替换正文里的实测
+  工具名（默认 `ego-browser`）。
 - **AI 不必背流程**：`atk agent --format json` 返回当前 `state`、`blockers`、可直接执行的
   `next[]`，以及该问人时的 `requires_human` + `human_prompt`。
 - **反悔**：`atk purge` 按 manifest 指纹只删 init 生成且未手工改动的物料，

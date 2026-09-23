@@ -12,6 +12,7 @@ LAST_RUN_REL = Path(".atk") / "last-run.json"
 
 
 def last_run_path(project: Path | str = ".") -> Path:
+    """`--last` 指针文件位置（与 layout.last_run_file 同一处，改动要两边同步）。"""
     return Path(project) / LAST_RUN_REL
 
 

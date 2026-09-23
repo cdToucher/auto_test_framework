@@ -55,4 +55,5 @@ def wrap(cmd: str, payload: dict, *, next_steps: list[str] | None = None,
 
 
 def dumps(cmd: str, payload: dict, **hints) -> str:
+    """wrap() 的 JSON 序列化：CLI 各命令 `--format json` 的统一出口。"""
     return json.dumps(wrap(cmd, payload, **hints), ensure_ascii=False, indent=2)

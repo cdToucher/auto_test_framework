@@ -12,13 +12,26 @@ table{border-collapse:collapse;width:100%}
 th,td{border-bottom:1px solid #e3e5e8;padding:8px;text-align:left;font-size:13px}
 .ok{color:#0a7d32}.bad{color:#c62828}.warn{color:#b26a00}.pending{color:#1565c0}
 ul{padding-left:18px}li{margin:4px 0;font-size:13px;list-style:none}
+pre.body{white-space:pre-wrap;word-break:break-all;margin:6px 0;padding:8px;background:#fbf3f2;border-left:3px solid #c62828;font-size:12px}
 """
 
 _ROW = (
     "<tr><td>{name}</td><td>{file}</td><td>{module}</td><td>{prio}</td>"
     "<td class='{cls}'>{verdict}</td></tr>"
 )
-_STEP = "<li class='{cls}'>{mark} {title} — {detail}</li>"
+_STEP = "<li class='{cls}'>{mark} {title} — {detail}{extra}</li>"
+
+
+def _step_li(s, cls: str) -> str:
+    """一步一行；失败那步额外带上实际返回，省得为了看响应去重跑一遍。"""
+    extra = (f"<pre class=body>{_html.escape(s.response)}</pre>" if s.response else "")
+    return _STEP.format(
+        cls=cls,
+        mark="✓" if s.passed else "✗",
+        title=_html.escape(s.title),
+        detail=_html.escape(s.detail),
+        extra=extra,
+    )
 
 
 def _verdict(r) -> tuple[str, str]:
@@ -50,15 +63,7 @@ def render_html(report: RunReport, out_path: Path | str) -> Path:
                 verdict=verdict,
             )
         )
-        lis = "".join(
-            _STEP.format(
-                cls="ok" if s.passed else cls,
-                mark="✓" if s.passed else "✗",
-                title=_html.escape(s.title),
-                detail=_html.escape(s.detail),
-            )
-            for s in r.steps
-        )
+        lis = "".join(_step_li(s, "ok" if s.passed else cls) for s in r.steps)
         details.append(f"<h3>{_html.escape(r.scenario.scenario)}（env={_html.escape(r.env)}，{r.duration_ms}ms）</h3><ul>{lis}</ul>")
     err_lines = "".join(f"<li class='warn'>{_html.escape(e)}</li>" for e in report.load_errors)
     doc = (
@@ -114,6 +119,11 @@ def render_run_html(rec, out_path: Path | str) -> Path:
                 cls, _html.escape(str(verdict)),
             )
         )
+        if not s.passed:
+            # 运行记录报告原来只有一行结论，失败原因（断言消息 + 实际返回）全丢了
+            failed = "".join(_step_li(st, "bad") for st in s.steps if not st.passed)
+            if failed:
+                srows.append(f"<tr><td colspan=4><ul>{failed}</ul></td></tr>")
     for i in rec.intents:
         cls, label = _RUN_STATUS.get(i.status, ("bad", i.status))
         imgs = "".join(
