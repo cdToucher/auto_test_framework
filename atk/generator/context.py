@@ -6,8 +6,15 @@
 import subprocess
 from pathlib import Path
 
+from ..deps import blind_to_full_suite as deps_blind
 from ..diff_analyzer.git_diff import changed_files
-from ..diff_analyzer.modules import classify, load_module_map
+from ..diff_analyzer.modules import (
+    affected_modules,
+    classify,
+    load_module_map,
+    module_map_status,
+    MAP_OK,
+)
 from ..store.loader import load_scenarios
 from ..store.models import ApiStep, Step
 
@@ -111,17 +118,20 @@ def _step_expect(st: Step) -> str:
 
 
 def existing_scenarios(
-    modules: list[str], scenarios_root: Path | str = "scenarios"
+    modules: list[str] | None, scenarios_root: Path | str = "scenarios"
 ) -> dict[str, list[dict]]:
     """汇总受影响模块的现有场景摘要，供去重与风格对齐。
 
     带上 file 与逐步 expects：Agent 光看 calls 只能猜"大概重复"，要判"等价"必须能
     直接看到断言了什么、以及去哪核对，否则它会另写一条平行的重复场景。
+
+    modules=None 表示"影响面算不清"：此时给出**全库**清单。只给空清单等于告诉
+    AI"没有既有场景"，它必然重写重复场景——方向必须是多给，不是少给。
     """
     scs, _ = load_scenarios(scenarios_root)
     out: dict[str, list[dict]] = {}
     for s in scs:
-        if s.module not in modules:
+        if modules is not None and s.module not in modules:
             continue
         calls = [
             st.call if isinstance(st, ApiStep) else f"ui: {st.action}" for st in s.steps
@@ -149,9 +159,13 @@ def build_context(
 ) -> dict:
     """构建完整变更上下文包（dict 形态）。"""
     files = changed_files(base, head, repo)
-    module_map = load_module_map(module_map_path)
+    status = module_map_status(module_map_path)
+    module_map = load_module_map(module_map_path) if status == MAP_OK else {}
     groups = classify(files, module_map)
-    affected = sorted(m for m in groups if m != "__unmapped__")
+    unmapped = groups.get("__unmapped__") or []
+    affected = affected_modules(groups)
+    # 映射表不可用、或有**行为相关**文件落不进任何模块 → 影响面算不清 → 现有场景给全库
+    blind = status != MAP_OK or deps_blind(unmapped)
     return {
         "base": base,
         "head": head,
@@ -161,8 +175,11 @@ def build_context(
         "files": files,
         "groups": groups,
         "affected_modules": affected,
+        "module_map_status": status,
+        "impact_blind": blind,
         "patches": file_patches(base, head, repo, max_lines_per_file=max_patch_lines),
-        "existing_scenarios": existing_scenarios(affected, scenarios_root),
+        "existing_scenarios": existing_scenarios(
+            None if blind else affected, scenarios_root),
     }
 
 
@@ -183,6 +200,11 @@ def render_markdown(ctx: dict) -> str:
     lines.append("")
 
     lines.append("## 变更文件与模块归属")
+    if ctx.get("impact_blind"):
+        lines.append(
+            "> ⚠ 影响面算不清（模块映射不可用，或有变更文件未映射到任何模块）。"
+            "下面列出的是**全库**既有场景，判重复时以它为准，不要因为"
+            "「受影响模块」为空就另写一条平行场景。")
     for mod, fs in ctx["groups"].items():
         if mod == "__unmapped__":
             continue

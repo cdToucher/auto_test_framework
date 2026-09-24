@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from .. import layout
+from ..policy import tally
 from . import repo
 from .jobs import BusyError, JobManager
 
@@ -49,14 +50,10 @@ def _run_summaries(root: Path, limit: int | None = None) -> list[dict]:
         except Exception:
             continue
         scs = rec.get("scenarios") or []
-        pass_n = sum(1 for s in scs if s.get("passed"))
-        fail_n = sum(1 for s in scs if not s.get("passed") and s.get("error_class") in ("assertion", "config"))
-        blocked_n = sum(
-            1
-            for s in scs
-            if not s.get("passed")
-            and s.get("error_class") not in ("assertion", "config", "ui_pending", "skipped")
-        )
+        # 列表页不反序列化整份记录，但计数口径必须和 gate 是同一份：交给 policy.tally，
+        # 它接受裸 dict。此前这里是从 scs 里再手算一遍 assertion/config 过滤条件。
+        t = tally(scs)
+        pass_n, fail_n, blocked_n = t.passed, t.failed, t.blocked
         out.append({
             "run_id": rec.get("run_id", d.name),
             "created_at": rec.get("created_at"),

@@ -56,7 +56,7 @@ def test_gate_pass(repo, monkeypatch):
     monkeypatch.chdir(repo)
     rec = create_run(runs_dir=repo / "reports" / "runs")
     rec.scenarios.append(ScenarioSummary(
-        name="s", passed=True, error_class="none",
+        name="s", module="demo", passed=True, error_class="none",
         steps=[StepSummary(title="step", passed=True, detail="200")],
     ))
     _save(rec, repo)
@@ -70,7 +70,7 @@ def test_gate_json_pass(repo, monkeypatch):
     monkeypatch.chdir(repo)
     rec = create_run(runs_dir=repo / "reports" / "runs")
     rec.scenarios.append(ScenarioSummary(
-        name="s", passed=True, error_class="none",
+        name="s", module="demo", passed=True, error_class="none",
         steps=[StepSummary(title="step", passed=True, detail="200")],
     ))
     _save(rec, repo)
@@ -88,7 +88,7 @@ def test_gate_blocks_on_case_failure(repo, monkeypatch):
     monkeypatch.chdir(repo)
     rec = create_run(runs_dir=repo / "reports" / "runs")
     rec.scenarios.append(ScenarioSummary(
-        name="s", passed=False, error_class="assertion",
+        name="s", module="demo", passed=False, error_class="assertion",
         steps=[StepSummary(title="step", passed=False, detail="status 500")],
     ))
     _save(rec, repo)
@@ -103,7 +103,7 @@ def test_gate_json_blocks_on_case_failure(repo, monkeypatch):
     monkeypatch.chdir(repo)
     rec = create_run(runs_dir=repo / "reports" / "runs")
     rec.scenarios.append(ScenarioSummary(
-        name="s", passed=False, error_class="assertion",
+        name="s", module="demo", passed=False, error_class="assertion",
         steps=[StepSummary(title="step", passed=False, detail="status 500")],
     ))
     _save(rec, repo)
@@ -131,6 +131,10 @@ def test_gate_blocked_intent_warns_but_passes(repo, monkeypatch):
 
     monkeypatch.chdir(repo)
     rec = create_run(runs_dir=repo / "reports" / "runs")
+    rec.scenarios.append(ScenarioSummary(
+        name="s", module="demo", passed=True, error_class="none",
+        steps=[StepSummary(title="step", passed=True, detail="200")],
+    ))
     rec.intents.append(IntentRecord(title="环境不可用", status="blocked", note="服务宕机"))
     _save(rec, repo)
     r = CliRunner().invoke(app, ["gate", rec.run_id])

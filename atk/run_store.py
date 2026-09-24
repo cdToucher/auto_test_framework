@@ -1,5 +1,7 @@
 """即时层运行记录：plan 创建 -> 执行回填 -> 报告渲染的单一事实源。"""
 import datetime as dt
+import hashlib
+import os
 import shutil
 from pathlib import Path
 from typing import Literal
@@ -30,12 +32,19 @@ class IntentRecord(BaseModel):
 
     pending=还没人实测（拦）；fail/suspect=有问题或待定性（拦）；
     pass=成立（放行）；blocked=环境原因没测成（只告警，不拦）。
+
+    时间戳与操作者是这套机制的承重墙：没有它们，"suspect 24h 内必须定性"就只是一句
+    散文，也无从判断某条 pass 是哪一次、由谁回填的。当前态仍留在 run.yaml（单一事实源），
+    完整迁移史在旁边的 events.yaml。
     """
     title: str
     # pending：由含 ui: 步骤的场景在 run 时自动登记，等 AI 实测后 record 回填定性
     status: Literal["pass", "fail", "suspect", "blocked", "pending"] = "pass"
     note: str = ""
     evidence: list[str] = Field(default_factory=list)
+    first_seen_at: str = ""   # 登记为 pending 的时刻
+    at: str = ""              # 最近一次状态迁移
+    by: str = ""              # 最近一次下结论的人/AI 标识
 
 
 class StepSummary(BaseModel):
@@ -82,11 +91,25 @@ class RunRecord(BaseModel):
     head_commit: str = ""  # plan 时 head 的 commit SHA，gate 比对内容一致性
     affected_files: list[str] = Field(default_factory=list)
     affected_modules: list[str] = Field(default_factory=list)
+    # 选择依据：module_map=按影响面选出的子集；full_suite=有影响面算不清，保守跑全库。
+    # unmapped_files 非空却仍是 module_map，等于"有些改动没被任何场景覆盖"，gate 要拦。
+    selection_mode: str = "module_map"
+    unmapped_files: list[str] = Field(default_factory=list)
+    # 选择过程的告警（未映射文件、映射表缺失、非 git 仓库）。走 JSON 字段而不是 stderr：
+    # --format json 的输出必须能被直接管道给 jq，AI 也不该去抓终端文本才知道跑偏了。
+    selection_warnings: list[str] = Field(default_factory=list)
     planned_scenarios: list[str] = Field(default_factory=list)
+    # 证据文件名 -> sha256。"pass 必须有证据"要的是文件真在、内容就是这一份；
+    # 只存路径的话，一个空文件或被替换的文件照样能骗过检查。
+    evidence_sha: dict[str, str] = Field(default_factory=dict)
     commits: list[CommitInfo] = Field(default_factory=list)
     reviews: list[ReviewRecord] = Field(default_factory=list)
     scenarios: list[ScenarioSummary] = Field(default_factory=list)
     intents: list[IntentRecord] = Field(default_factory=list)
+    # 每次整份重写自增；配合 events.yaml 里的 save 事件，gate 才能查出
+    # "磁盘上的 run.yaml 是不是最后一次合法落盘的那份"（手改/倒填会被拦）。
+    revision: int = 0
+    updated_at: str = ""
 
 
 def review_status(
@@ -106,10 +129,32 @@ def review_status(
 
 
 def _dump(rec: RunRecord, path: Path) -> None:
-    path.write_text(
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(
         yaml.safe_dump(rec.model_dump(), allow_unicode=True, sort_keys=False),
         encoding="utf-8",
     )
+    os.replace(tmp, path)
+
+
+def save_run(rec: RunRecord, runs_dir: Path | str = "reports/runs", *,
+             actor: str = "", log_event: bool = True) -> Path:
+    """整份覆盖写回 run.yaml（记录是单一事实源，不做增量拼接）。
+
+    写是原子的（tmp + os.replace）：半个文件被 load_run 读到会抛 KeyError，
+    进而被 CLI 折算成 exit 2——一个读到撕裂记录的"没测成"比一次崩溃更难查。
+    当前态留在 run.yaml，迁移史追加进同目录的 events.yaml。
+    """
+    f = _run_yaml(rec.run_id, runs_dir)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    rec.revision = int(rec.revision or 0) + 1
+    rec.updated_at = dt.datetime.now().isoformat(timespec="seconds")
+    _dump(rec, f)
+    if log_event:
+        from . import events
+
+        events.record_save(runs_dir, rec.run_id, actor=actor)
+    return f
 
 
 def create_run(
@@ -118,6 +163,9 @@ def create_run(
     head_commit: str = "",
     affected_files: list[str] | None = None,
     affected_modules: list[str] | None = None,
+    selection_mode: str = "module_map",
+    unmapped_files: list[str] | None = None,
+    selection_warnings: list[str] | None = None,
     planned_scenarios: list[str] | None = None,
     title: str = "",
     commits: list[CommitInfo] | None = None,
@@ -144,13 +192,25 @@ def create_run(
         head_commit=head_commit,
         affected_files=affected_files or [],
         affected_modules=affected_modules or [],
+        selection_mode=selection_mode,
+        unmapped_files=unmapped_files or [],
+        selection_warnings=selection_warnings or [],
         planned_scenarios=planned_scenarios or [],
         commits=commits or [],
         reviews=reviews or [],
     )
+    # 目录本身就是锁：mkdir 撞车会抛 FileExistsError，比"先 exists 再 mkdir"可靠——
+    # 同一秒内两次 create_run 用 exists() 预判会双双通过，然后互相覆盖。
     d = Path(runs_dir) / rec.run_id
-    d.mkdir(parents=True, exist_ok=True)
-    _dump(rec, d / RUN_YAML)
+    while True:
+        try:
+            d.mkdir(parents=True)
+            break
+        except FileExistsError:
+            rec.run_id = f"{base_id}-{n}"
+            n += 1
+            d = Path(runs_dir) / rec.run_id
+    save_run(rec, runs_dir, actor="plan")
     return rec
 
 
@@ -176,29 +236,28 @@ def load_run(run_id: str, runs_dir: Path | str = "reports/runs") -> RunRecord:
     return RunRecord(**data)
 
 
-def save_run(rec: RunRecord, runs_dir: Path | str = "reports/runs") -> Path:
-    """整份覆盖写回 run.yaml（记录是单一事实源，不做增量拼接）。"""
-    f = _run_yaml(rec.run_id, runs_dir)
-    f.parent.mkdir(parents=True, exist_ok=True)
-    _dump(rec, f)
-    return f
-
-
 def add_evidence(
     rec: RunRecord, sources: list[str], runs_dir: Path | str = "reports/runs"
-) -> list[str]:
-    """拷贝存在的证据文件进运行目录，返回相对引用名；缺失源静默跳过。"""
+) -> tuple[list[str], list[str]]:
+    """拷贝证据进运行目录，返回 (已保存引用, 缺失源)。
+
+    缺失不再静默跳过：一个不存在的截图路径过去只在终端提示一句，写进 run.yaml 的
+    却是一条看起来完整的 evidence 列表——"pass 必须有证据"要求的是证据真在。
+    """
     ev = Path(runs_dir) / rec.run_id / EVIDENCE_DIR
     ev.mkdir(parents=True, exist_ok=True)
     saved: list[str] = []
+    missing: list[str] = []
     for s in sources:
         src = Path(s)
         if not src.is_file():
+            missing.append(str(src))
             continue
         dest = ev / src.name
         shutil.copy2(src, dest)
         saved.append(f"{EVIDENCE_DIR}/{src.name}")
-    return saved
+        rec.evidence_sha[dest.name] = hashlib.sha256(dest.read_bytes()).hexdigest()
+    return saved, missing
 
 
 def summarize(result) -> ScenarioSummary:

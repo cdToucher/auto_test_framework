@@ -38,14 +38,19 @@ def test_load_run_missing_raises(tmp_path):
         load_run("smoke-nope", runs_dir=tmp_path)
 
 
-def test_add_evidence_copies_files(tmp_path):
+def test_add_evidence_reports_missing_sources(tmp_path):
+    """缺失证据不再静默跳过：过去只回一条 saved，缺的那份连痕迹都不留。"""
     src = tmp_path / "shot.png"
     src.write_bytes(b"\x89PNG fake")
     runs = tmp_path / "runs"
     rec = create_run(runs_dir=runs)
-    saved = add_evidence(rec, [str(src), str(tmp_path / "ghost.png")], runs_dir=runs)
+    ghost = tmp_path / "ghost.png"
+    saved, missing = add_evidence(rec, [str(src), str(ghost)], runs_dir=runs)
     assert saved == ["evidence/shot.png"]
+    assert missing == [str(ghost)]
     assert (runs / rec.run_id / "evidence" / "shot.png").exists()
+    # 存下来的那份要能被复核内容，不是只留一个文件名
+    assert rec.evidence_sha["shot.png"]
 
 
 def test_summarize_from_scenario_result():

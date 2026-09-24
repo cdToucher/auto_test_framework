@@ -7,19 +7,28 @@ import re
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import typer
+from pydantic import BaseModel, Field
 
 from .diff_analyzer.git_diff import (
     changed_files,
     is_git_repository,
     rev_parse,
-    uncommitted_files,
 )
-from .diff_analyzer.modules import classify, load_module_map
+from .diff_analyzer.modules import (
+    MAP_OK,
+    affected_modules,
+    classify,
+    load_module_map,
+    module_map_status,
+    unmapped_files,
+)
+from . import events
+from . import approvals as approvals_lib
 from .drafts import DRAFT_TAG, is_draft, review_draft
-from . import envelope, layout
+from . import deps, envelope, layout, policy
 from .executors.runner import RunReport, Runner
 from .generator.context import build_context, commit_log, render_markdown
 from .last_run import read_last_run, resolve_run_id, write_last_run
@@ -111,27 +120,44 @@ def _do_plan(
     title: str,
     runs_dir: Path,
     priority: Optional[Priority] = None,
+    project: Optional[Path] = None,
 ) -> tuple[RunRecord, list[str], dict[str, list[str]], list[Scenario], list[str]]:
-    """plan 确定性逻辑：影响面 -> 复用检索 -> create_run。抛 RuntimeError(git)。
+    """plan 确定性逻辑：影响面 -> 依赖账本 -> 选场景 -> create_run。抛 RuntimeError(git)。
 
     priority 与 run 共用口径（仅保留该优先级及更高，P0–P1 全跑），保证
     smoke 的复用清单与实际执行一致，避免 planned_scenarios 脱节。
+
+    选择方向写死在 deps.select_for_changes：任何"算不清影响面"的情形都是**多跑**
+    （未映射文件、没有模块映射表、拿不到 git、场景从没跑过），绝不是选 0 个。
     """
     if not repo.is_dir():
         raise RuntimeError(f"Git 仓库目录不存在: {repo}")
     git_available = is_git_repository(str(repo))
     files = changed_files(base, head, str(repo)) if git_available else []
-    groups = classify(files, load_module_map(module_map))
-    affected = sorted(m for m in groups if m != "__unmapped__")
+    map_status = module_map_status(module_map)
+    mmap = load_module_map(module_map) if map_status == MAP_OK else {}
+    groups = classify(files, mmap)
+    affected = affected_modules(groups)
+    unmapped = unmapped_files(groups)
     scs, errors = load_scenarios(root)
-    rank = {Priority.P0: 0, Priority.P1: 1, Priority.P2: 2}
-    reuse = [
-        s
-        for s in select(scs)
-        if s.module in affected
-        and (not tag_list or set(tag_list) <= set(s.tags))
-        and (priority is None or rank[s.priority] <= rank[priority])
-    ]
+    led = deps.load_ledger(deps.ledger_path(project or Path(".")))
+
+    if not git_available:
+        # 拿不到 diff 就无从谈影响面。跑全库，而不是"选中 0 个然后按通过算"。
+        sel = deps.Selection(
+            mode=deps.MODE_FULL, scenarios=list(scs), unmapped_files=[],
+            warnings=["目标不是 git 仓库或基线不可解析，影响面未知 → 执行全量场景库"],
+        )
+    else:
+        sel = deps.select_for_changes(
+            scenarios=scs, affected=set(affected), unmapped_files=unmapped,
+            ledger=led, tag_list=tag_list, priority=priority,
+        )
+    if map_status != MAP_OK and files:
+        sel.warnings.append(
+            f"{module_map} 不可用（{map_status}），本次按全量执行；"
+            "补映射后 atk validate 会双向检查它和场景库是否对得上")
+    reuse = sel.scenarios
     commits: list[CommitInfo] = []
     head_commit = ""
     if git_available:
@@ -154,6 +180,9 @@ def _do_plan(
         head_commit=head_commit,
         affected_files=files,
         affected_modules=affected,
+        selection_mode=sel.mode,
+        unmapped_files=sel.unmapped_files,
+        selection_warnings=sel.warnings,
         planned_scenarios=[s.file for s in reuse],
         title=title,
         commits=commits,
@@ -233,8 +262,13 @@ def _register_pending_ui_intents(rec: RunRecord, report: RunReport) -> int:
     return added
 
 
-def _merge_report_into_run(report: RunReport, record_to: str, runs_dir: Path) -> None:
-    """把 RunReport 结果并入指定运行记录（同场景重跑覆盖旧结果）。抛 KeyError(记录不存在)。"""
+def _merge_report_into_run(report: RunReport, record_to: str, runs_dir: Path,
+                           project: Path = Path(".")) -> None:
+    """把 RunReport 结果并入指定运行记录（同场景重跑覆盖旧结果）。抛 KeyError(记录不存在)。
+
+    依赖账本也在这里写：run 与 smoke 都走这条路，写在任何一条命令里都会漏掉另一条,
+    而账本一旦与实际执行脱节，plan 的"按影响面子集选择"就失去了依据。
+    """
     rec = load_run(record_to, str(runs_dir))
     index = {s.file or s.name: i for i, s in enumerate(rec.scenarios)}
     for sm in (summarize(r) for r in report.results):
@@ -245,7 +279,9 @@ def _merge_report_into_run(report: RunReport, record_to: str, runs_dir: Path) ->
             index[key] = len(rec.scenarios)
             rec.scenarios.append(sm)
     _register_pending_ui_intents(rec, report)
-    save_run(rec, str(runs_dir))
+    save_run(rec, str(runs_dir), actor="run")
+    deps.record_execution(report.results, run_id=record_to, env=report.env_name,
+                          path=deps.ledger_path(project))
 
 
 def _do_report(run_id: str, runs_dir: Path) -> Path:
@@ -254,103 +290,45 @@ def _do_report(run_id: str, runs_dir: Path) -> Path:
     return render_run_html(rec, Path(runs_dir) / run_id / "report.html")
 
 
+def _run_next(rid: Optional[str], pending_ui: int, blocked: int) -> list[str]:
+    """`run` 之后的下一步，一律带真实 run_id。
+
+    本次没落任何记录时不许指回 --last：`.atk/last-run.json` 是全局单槽，那时它
+    还指着上一条 run，照做就会把结论回填到别的运行记录上。
+    """
+    if not rid:
+        return ["atk run --record-new"]
+    if pending_ui:
+        return [f'atk record {rid} --title "<意图>" '
+                '--status <pass|fail|suspect|blocked> --note "<证据>"']
+    if blocked:
+        return ["atk agent --format json"]
+    return [f"atk gate {rid} --format json"]
+
+
 def _do_gate(
-    run_id: str, head: str, repo: Path, runs_dir: Path
+    run_id: str, head: str, repo: Path, runs_dir: Path,
+    root: Optional[Path] = None,
 ) -> tuple[bool, list[tuple[bool, str, bool]], str, RunRecord]:
-    """gate 判定逻辑。抛 KeyError(记录不存在)/RuntimeError(git)。
+    """gate 判定：跑 policy.GATE_CHECKS。抛 KeyError(记录不存在)/RuntimeError(git)。
 
     返回 (是否放行, verdicts, 确认状态行, 运行记录)。
     verdicts 为 (ok, message, warn)：ok=False 拦截；warn=True 是仅提示项。
+
+    检查项本身、以及"这一项拦不拦"都在 atk/policy.py 的检查表里。此前它们是
+    一段 90 行的 if/elif，"哪一项会拦"只能靠读控制流反推，且有四项从来没有
+    "证明它会拦"的用例。
     """
     rec = load_run(run_id, str(runs_dir))
-    verdicts: list[tuple[bool, str, bool]] = []
-    if not rec.scenarios and not rec.intents:
-        verdicts.append((False, "运行记录无场景结果也无意图（未执行或选中为空），不可作为门禁依据", False))
-    if not rec.base_ref:
-        verdicts.append((True, "运行记录未绑定 Git 基线，跳过变更一致性检查", False))
-    else:
-        current = changed_files(rec.base_ref, head, str(repo))
-        if sorted(current) != sorted(rec.affected_files):
-            verdicts.append((False, "变更已漂移：当前 diff 与运行记录不一致，请重新 plan", False))
-        else:
-            verdicts.append((True, f"变更一致（{len(current)} 个文件）", False))
-        if rec.head_commit:
-            try:
-                now_sha = rev_parse(head, str(repo))
-            except RuntimeError:
-                now_sha = ""
-            if now_sha and now_sha != rec.head_commit:
-                verdicts.append((False, f"head 已前进：记录建于 {rec.head_commit[:12]}，当前 {now_sha[:12]}，请重新 plan", False))
-        elif not rec.head_commit and current:
-            verdicts.append((True, "记录无 head commit 信息（旧记录），跳过内容一致性检查", False))
-        dirty = uncommitted_files(str(repo))
-        if dirty:
-            verdicts.append((True, f"⚠ 工作区有 {len(dirty)} 个未提交文件（三点 diff 不含其内容，门禁未覆盖）: "
-                                   + ", ".join(dirty[:5]) + (" …" if len(dirty) > 5 else ""), True))
-    case_fail = [s for s in rec.scenarios if not s.passed and s.error_class in ("assertion", "config")]
-    if case_fail:
-        verdicts.append((False, f"用例失败 {len(case_fail)} 个: " + ", ".join(s.name for s in case_fail), False))
-    elif rec.scenarios:
-        blocked_n = sum(
-            1
-            for s in rec.scenarios
-            if not s.passed
-            and s.error_class not in ("assertion", "config", "ui_pending", "skipped")
-        )
-        verdicts.append((True, f"复用场景 {len(rec.scenarios)} 个无用例失败"
-                                + (f"（受阻 {blocked_n} 个）" if blocked_n else ""),
-                         blocked_n > 0))
-    # 草稿判定 = 运行时记录的 draft 与磁盘现状取并集：
-    # 磁盘仍是草稿、或草稿文件已消失（reject 移走）都算未评审——
-    # 防止"跑完草稿再 reject"留下未审定结果混过门禁；approve 转正后放行。
-    unreviewed = sorted({
-        s.name for s in rec.scenarios
-        if (s.file and is_draft(s.file)) or (s.draft and s.file and not Path(s.file).exists())
-    })
-    if unreviewed:
-        verdicts.append((False, f"存在未评审AI草稿 {len(unreviewed)} 个: "
-                                + ", ".join(unreviewed)
-                                + f"（请先 atk review-draft 评审转正，{DRAFT_TAG} tag 未去掉不得参与门禁）", False))
-    bad_intents = [i for i in rec.intents if i.status in ("fail", "suspect")]
-    if bad_intents:
-        verdicts.append((False, "存在未定性结论: " + "; ".join(f"{i.title}[{i.status}]" for i in bad_intents), False))
-    # UI 步骤 atk run 不执行，定性只能来自 AI 实测后的 record 回填；
-    # 未回填即放行等于"没测过就说通过"，必须拦截。
-    pending_intents = [i for i in rec.intents if i.status == "pending"]
-    if pending_intents:
-        verdicts.append(
-            (
-                False,
-                f"存在未实测回填的 UI 意图 {len(pending_intents)} 条: "
-                + "; ".join(i.title for i in pending_intents)
-                + "（请用 AI 浏览器实测后 atk record --last --from-json 回填）",
-                False,
-            )
-        )
-    pending_ui = [s for s in rec.scenarios if s.error_class == "ui_pending"]
-    if pending_ui and not pending_intents:
-        verdicts.append(
-            (
-                True,
-                f"UI 待实测场景 {len(pending_ui)} 个已全部回填（仅提示）",
-                False,
-            )
-        )
-    blocked = [i for i in rec.intents if i.status == "blocked"]
-    if blocked:
-        verdicts.append((True, f"受阻意图 {len(blocked)} 条（不拦截，但需关注）", True))
-    reviews = getattr(rec, "reviews", []) or []
-    status, last = review_status(reviews)
-    if status == "rejected":
-        assert last is not None
-        review_line = f"⚠ 已被开发驳回 by {last.by}（仅告警，不拦截）" + (f"：{last.note}" if last.note else "")
-    elif status == "unconfirmed":
-        review_line = "⚠ 未经开发确认（仅告警，不拦截）"
-    else:
-        assert last is not None
-        review_line = f"✓ 已获开发确认 by {last.by}"
-    passed = all(ok for ok, _, _ in verdicts)
-    return passed, verdicts, review_line, rec
+    ctx = policy.GateContext(
+        rec=rec,
+        repo=Path(repo),
+        head=head,
+        runs_dir=Path(runs_dir),
+        root=Path(root) if root is not None else Path("."),
+    )
+    passed, verdicts = policy.run_checks(ctx)
+    return passed, verdicts, policy.review_line(rec), rec
 
 
 def _scenario_json(s: Scenario) -> dict[str, Any]:
@@ -379,6 +357,13 @@ def _plan_json(
         "affected_files": rec.affected_files,
         "affected_modules": affected,
         "groups": groups,
+        # 选择依据一起进 payload：AI 要能看出"这次是按下述理由跑了全库/子集"，
+        # 而不必去猜为什么场景数突然变多。
+        "selection": {
+            "mode": rec.selection_mode,
+            "unmapped_files": rec.unmapped_files,
+            "warnings": rec.selection_warnings,
+        },
         "reuse": [_scenario_json(s) for s in reuse],
         "planned_scenarios": rec.planned_scenarios,
         "load_errors": errors,
@@ -455,11 +440,20 @@ def validate(
             fg=typer.colors.YELLOW,
         )
     ok = len([s for s in scs if s.scenario not in dup])
+    # 增量选择依赖 modules.yaml 与场景库对得上；这张人维护的表错的时候是静默的
+    # （少选场景、gate 照样放行），所以把它放到作者自查这一步。
+    L = _layout_paths()
+    doc = deps.doctor(L["module_map"], scs)
+    for msg in doc.errors:
+        typer.secho(f"[错误] 增量选择: {msg}", fg=typer.colors.RED)
+    for msg in doc.warnings:
+        typer.secho(f"[警告] 增量选择: {msg}", fg=typer.colors.YELLOW)
     typer.echo(
         f"{len(errors)} 个文件错误，{len(dup)} 个重名，"
         f"{len(mismatches)} 个 module 与目录不一致，{ok} 个场景通过校验"
+        + (f"；{len(doc.errors)} 个增量选择映射问题" if doc.errors else "")
     )
-    raise typer.Exit(code=1 if errors else 0)
+    raise typer.Exit(code=1 if errors or doc.errors else 0)
 
 
 @app.command()
@@ -489,28 +483,31 @@ def plan(
     runs_dir = _resolve(runs_dir, L["runs_dir"])
     try:
         rec, affected, groups, reuse, errors = _do_plan(
-            base, head, repo, root, module_map, tag_list, title, runs_dir
+            base, head, repo, root, module_map, tag_list, title, runs_dir,
+            project=project,
         )
     except RuntimeError as e:
         typer.secho(str(e), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
     write_last_run(project, rec.run_id, base=rec.base_ref, head=rec.head_ref, title=title, created_at=rec.created_at)
+    plan_exit = policy.project(policy.Tally(), load_errors=len(errors))
     if output_format == "json":
         typer.echo(envelope.dumps(
             "plan",
             _plan_json(rec, affected, groups, reuse, errors),
             next_steps=["atk validate"] if errors else ["atk run --dry-run"],
             blockers=list(errors),
-            # plan 有加载错误也 exit 0（原行为，CI 依赖），所以退出码要显式给，
-            # 不能让契约按 ok=False 推成 2。
-            exit_code=0,
+            # 加载错误按 exit 2（配置错/没测成）报，与 envelope 与 atk_use 自己
+            # 声明的三态一致；run 侧走同一张投影表，两个命令不会各说一套。
+            exit_code=plan_exit,
         ))
-        # 退出码维持原行为（plan 有加载错误也返回 0），阻塞信息走 blockers，
-        # 不在本次改动里悄悄改 CI 依赖的退出码语义。
-        raise typer.Exit(code=0)
+        raise typer.Exit(code=plan_exit)
     typer.echo(f"功能：{title}" if title else "功能：（未命名）")
     typer.echo(f"run_id: {rec.run_id}")
     typer.echo(f"affected_modules: {', '.join(affected) if affected else '（无映射命中）'}")
+    typer.echo(f"selection: {rec.selection_mode}")
+    for w in rec.selection_warnings:
+        typer.secho(f"[警告] {w}", fg=typer.colors.YELLOW, err=True)
     for e in errors:
         typer.secho(f"[跳过] {e}", fg=typer.colors.YELLOW, err=True)
     for u in groups.get("__unmapped__", []):
@@ -524,9 +521,31 @@ def plan(
         f"     atk record {rec.run_id} --title ... --status pass|fail|suspect|blocked [--evidence 截图]\n"
         f"  3. atk report {rec.run_id}"
     )
+    # 文本模式与 --format json 必须同码退出，否则同一个坏库两种输出两个结论
+    raise typer.Exit(code=plan_exit)
 
 
 _INTENT_STATUS = {"pass", "fail", "suspect", "blocked"}
+
+
+class _RecordPayload(BaseModel):
+    """`--from-json` 的形状。用模型而不是 `payload.get(...) or ...`：
+
+    过去 `status: "PASSED"` 会被原样收下、落进 run.yaml 变成一个 gate 谁都不认的状态。
+    字面量枚举 + 必填 run_id 让这类错误在入口就炸掉。
+    """
+
+    model_config = {"extra": "forbid"}
+
+    run_id: str
+    title: str
+    status: Literal["pass", "fail", "suspect", "blocked"]
+    note: str = ""
+    evidence: list[str] = Field(default_factory=list)
+    evidence_files: list[str] = Field(default_factory=list)
+
+    def evidence_all(self) -> list[str]:
+        return [*self.evidence, *self.evidence_files]
 
 
 @app.command()
@@ -539,7 +558,12 @@ def record(
     note: str = typer.Option("", help="结论描述/根因猜测"),
     evidence: Optional[str] = typer.Option(None, help="证据文件路径，逗号分隔"),
     from_json: Optional[Path] = typer.Option(
-        None, "--from-json", help="从 JSON 文件读取 AI/UI 实测结果"
+        None, "--from-json", help="从 JSON 文件读取 AI/UI 实测结果（必须带 run_id）"
+    ),
+    by: str = typer.Option("", "--by", help="下结论的人/标识，仅追溯用（审批走 atk approvals）"),
+    allow_new_intent: bool = typer.Option(
+        False, "--allow-new-intent",
+        help="允许登记本次运行没有覆盖到的意图（默认拒绝：凭空发明的覆盖面不算测过）",
     ),
     runs_dir: Optional[Path] = typer.Option(None, help=_LAYOUT_HELP),
     last: bool = typer.Option(False, "--last", help="使用最近一次运行记录（无需拼 run_id）"),
@@ -548,40 +572,41 @@ def record(
 ):
     """回填一条即时层意图的执行结果（Agent 用浏览器实测后调用）。
 
-    同名意图就地更新（含 run 自动登记的 pending），不会重复追加。
+    同名意图就地更新（含 run 自动登记的 pending），不会重复追加；每次迁移都往
+    events.yaml 追加一条带时间戳的记录，run.yaml 里的当前态可以被改写但改不掉痕迹。
+
+    pass 必须带 --note 与至少一个真实存在的 --evidence：一个没有任何凭据的 pass 和
+    "没测过"在门禁看来不该有区别。
     """
     if output_format not in ("text", "json"):
         raise typer.BadParameter("format 必须是 text|json")
     run_id = _run_id_arg(run_id, last, project)
     runs_dir = _resolve(runs_dir, _layout_paths(project)["runs_dir"])
+    payload_sha = ""
     if from_json:
         try:
-            payload = json.loads(from_json.read_text(encoding="utf-8"))
+            raw = json.loads(from_json.read_text(encoding="utf-8"))
         except Exception as e:
             typer.secho(f"读取 --from-json 失败：{e}", fg=typer.colors.RED, err=True)
             raise typer.Exit(code=2)
-        if not isinstance(payload, dict):
-            typer.secho("--from-json 顶层必须是对象", fg=typer.colors.RED, err=True)
+        try:
+            payload = _RecordPayload.model_validate(raw)
+        except Exception as e:
+            typer.secho(f"--from-json 不合法：{e}", fg=typer.colors.RED, err=True)
             raise typer.Exit(code=2)
-        if payload.get("run_id") and payload["run_id"] != run_id:
+        payload_sha = hashlib.sha256(
+            json.dumps(raw, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        if payload.run_id != run_id:
             typer.secho(
-                f"--from-json run_id 不匹配：{payload['run_id']} != {run_id}",
-                fg=typer.colors.RED,
-                err=True,
-            )
+                f"--from-json 必须声明它填的是哪条记录：run_id={payload.run_id} != {run_id}",
+                fg=typer.colors.RED, err=True)
             raise typer.Exit(code=2)
-        title = str(payload.get("title") or title or "")
-        status = str(payload.get("status") or status)
-        note = str(payload.get("note") or note or "")
-        ev = payload.get("evidence") or payload.get("evidence_files") or []
-        if isinstance(ev, str):
-            evidence = ",".join([evidence, ev]) if evidence else ev
-        elif isinstance(ev, list):
-            joined = ",".join(str(x) for x in ev)
-            evidence = ",".join([evidence, joined]) if evidence and joined else (evidence or joined)
-        else:
-            typer.secho("evidence 必须是字符串或字符串数组", fg=typer.colors.RED, err=True)
-            raise typer.Exit(code=2)
+        title = payload.title or title or ""
+        status = payload.status
+        note = payload.note or note
+        ev = payload.evidence_all()
+        parts = [p for p in [evidence, *ev] if p]
+        evidence = ",".join(parts) if parts else None
     if not title or not title.strip():
         raise typer.BadParameter("缺少 --title，或在 --from-json 中提供 title")
     if not status:
@@ -591,7 +616,11 @@ def record(
         )
     if status not in _INTENT_STATUS:
         raise typer.BadParameter(f"status 必须是 {'/'.join(sorted(_INTENT_STATUS))}")
-    if status in ("fail", "suspect") and not note.strip():
+    if status == "pass" and not note.strip():
+        typer.secho("pass 必须带 --note 写明依据（实测看到了什么），否则与没测无异",
+                    fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    if status in ("fail", "suspect", "blocked") and not note.strip():
         typer.secho(f"{status} 必须带 --note 说明证据、复现步骤或疑点", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
     try:
@@ -599,27 +628,50 @@ def record(
     except KeyError as e:
         typer.secho(str(e), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
-    sources = [p.strip() for p in evidence.split(",")] if evidence else []
-    saved = add_evidence(rec, sources, str(runs_dir))
-    missing = len([p for p in sources if p]) - len(saved)
+    sources = [p.strip() for p in evidence.split(",") if p.strip()] if evidence else []
+    saved, missing = add_evidence(rec, sources, str(runs_dir))
+    if missing:
+        typer.secho("证据文件不存在，未登记：" + ", ".join(missing)
+                    + "\n（pass 必须给出真实存在的证据；先补截图再重跑本条命令）",
+                    fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    if status == "pass" and not saved:
+        typer.secho("pass 必须至少带一个 --evidence 文件（实测截图/响应留档），"
+                    "否则这条结论与没测过无法区分", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
     # 回填语义：同名意图就地更新（含 run 自动登记的 pending），避免重复条目让 gate 误判
     key = title.strip()
     existing = next((i for i in rec.intents if i.title == key), None)
+    if existing is None and not allow_new_intent:
+        typer.secho(
+            f"意图「{key}」不在本次运行登记的覆盖清单里——凭空补一条意图等于发明覆盖面。"
+            f"确需追加用 atk record {run_id} --allow-new-intent",
+            fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    now_iso = dt.datetime.now().isoformat(timespec="seconds")
     if existing is not None:
         was = existing.status
         existing.status = status
         existing.note = note
         existing.evidence = list(dict.fromkeys(list(existing.evidence) + saved))
+        existing.at = now_iso
+        existing.by = by or existing.by
         action = f"已回填：{key} [{was} -> {status}]"
         upserted = True
     else:
-        rec.intents.append(IntentRecord(title=key, status=status, note=note, evidence=saved))
+        rec.intents.append(IntentRecord(title=key, status=status, note=note,
+                                        evidence=saved, first_seen_at=now_iso,
+                                        at=now_iso, by=by))
         action = f"已记录：{key} [{status}]"
         upserted = False
-    save_run(rec, str(runs_dir))
-    warn = f"（{missing} 个证据文件不存在已跳过）" if missing else ""
+    save_run(rec, str(runs_dir), actor=by or "record")
+    # 迁移史单独追加：run.yaml 是当前态，谁在什么时候把 pending 改成 pass 的痕迹在 events 里
+    events.append(runs_dir, run_id, kind="intent", actor=by, target=key,
+                  **{"from": (was if upserted else None), "to": status,
+                     "payload_sha": payload_sha or None,
+                     "evidence": saved or None})
     if output_format != "json":
-        typer.echo(f"{action} 证据 {len(saved)} 项{warn}")
+        typer.echo(f"{action} 证据 {len(saved)} 项")
 
     if output_format == "json":
         pending_after = sum(1 for i in rec.intents if i.status == "pending")
@@ -631,12 +683,12 @@ def record(
                 "status": status,
                 "upserted": upserted,
                 "evidence": saved,
-                "evidence_missing": missing,
                 "pending_intents": pending_after,
                 "next": (
-                    ["atk gate --last --format json"]
+                    [f"atk gate {run_id} --format json"]
                     if pending_after == 0
-                    else ["atk record --last --title <下一条意图> --status <pass|fail|suspect|blocked>"]
+                    else [f'atk record {run_id} --title "<下一条意图>" '
+                          "--status <pass|fail|suspect|blocked>"]
                 ),
             },
             # suspect 按定义就是"要人定性"，AI 不得自己判结论
@@ -649,9 +701,12 @@ def record(
 @app.command()
 def review(
     run_id: Optional[str] = typer.Argument(None, help="运行记录 ID；可用 --last 代替"),
-    by: str = typer.Option(..., help="确认人"),
+    by: str = typer.Option(..., help="确认人（必须是 config/reviewers.yaml 里的真人）"),
     verdict: str = typer.Option(..., help="approve|reject"),
     note: str = typer.Option("", help="确认备注；reject 时必填"),
+    approval: str = typer.Option(
+        "", "--approval",
+        help="一次性审批凭证（atk approvals mint --run <id> 得到）；缺失则无法落账"),
     runs_dir: Optional[Path] = typer.Option(None, help=_LAYOUT_HELP),
     last: bool = typer.Option(False, "--last", help="使用最近一次运行记录（无需拼 run_id）"),
     project: Path = typer.Option(".", "--project", help="项目根目录（.atk/last-run.json 所在位置）"),
@@ -675,9 +730,13 @@ def review(
     except KeyError as e:
         typer.secho(str(e), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
+    _require_human_reviewer(by=by, target=f"run:{run_id}", project=project,
+                            approval=approval, verdict=verdict, note=note, key="")
     now = dt.datetime.now().isoformat(timespec="seconds")
     rec.reviews.append(ReviewRecord(by=by, verdict=verdict, note=note, at=now))
-    save_run(rec, str(runs_dir))
+    save_run(rec, str(runs_dir), actor=by)
+    events.append(runs_dir, run_id, kind="review", actor=by, target="reviews",
+                  to=verdict)
     if output_format != "json":
         typer.echo(f"已确认：{run_id} by {by} [{verdict}]" + (f" {note}" if note else ""))
     if output_format == "json":
@@ -689,7 +748,7 @@ def review(
                 "by": by,
                 "verdict": verdict,
                 "review_status": status,
-                "next": (["atk gate --last --format json"] if verdict == "approve"
+                "next": ([f"atk gate {run_id} --format json"] if verdict == "approve"
                          else ["atk agent --format json"]),
             },
             # reject 之后要开发者决定改什么，AI 别自行改场景再跑
@@ -702,14 +761,21 @@ def review(
 @app.command("review-draft")
 def review_draft_cmd(
     path: Path = typer.Argument(..., help="草稿场景 YAML 路径"),
-    by: str = typer.Option(..., help="评审人"),
+    by: str = typer.Option(..., help="评审人（必须是 config/reviewers.yaml 里的真人）"),
     verdict: str = typer.Option(..., help="approve|reject"),
     note: str = typer.Option("", help="评审备注；reject 时必填"),
+    approval: str = typer.Option(
+        "", "--approval",
+        help="一次性审批凭证（在终端 atk approvals mint 得到）；缺失则无法落账"),
+    project: Path = typer.Option(".", "--project", help="项目根目录"),
     reports_dir: Optional[Path] = typer.Option(None, help=_LAYOUT_HELP + "；评审日志与驳回文件目录"),
 ):
-    """评审AI草稿：approve 去 tag 转正，reject 移走留档。
+    """评审AI草稿：approve 记入审批账本，reject 移走留档。
 
-    退出码：0=评审落盘；1=reject 缺 --note；2=verdict 非法或非草稿文件。
+    退出码：0=评审落盘；1=reject 缺 --note；2=凭证缺失/无效、身份不合法或非草稿文件。
+
+    转正的判据不再是"去掉 ai-generated tag"——那个字符串是 AI 自己能写的。真正的判据是
+    config/approvals.yaml 里一条以断言面指纹为键、凭交互式终端凭证才写得进去的记录。
     """
     reports_dir = _resolve(reports_dir, _layout_paths()["reports_dir"])
     if verdict not in ("approve", "reject"):
@@ -717,12 +783,113 @@ def review_draft_cmd(
     if verdict == "reject" and not note.strip():
         typer.secho("reject 必须带 --note 说明原因", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
+    approved = _require_human_reviewer(
+        by=by, target=str(path), project=project, approval=approval, verdict=verdict,
+        note=note, key=approvals_lib.expect_hash(path))
     try:
         msg = review_draft(path, by, verdict, note, reports_dir)
     except ValueError as e:
+        # 已经拿着有效凭证批过，就不该因为 tag 不在了而拒绝：审批判据是**内容指纹**，
+        # 与 tag 无关。否则"先摘 tag 再想补审批"会变成死路——AI 摘掉 tag 反而把文件锁死。
+        if approved and "不是AI草稿" in str(e):
+            typer.echo(f"已按凭证入账（该文件当前无 {DRAFT_TAG} tag，无需再摘）")
+            typer.echo("审批已入账：" + str(approvals_lib.approvals_file(project)))
+            return
         typer.secho(str(e), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
     typer.echo(msg)
+    typer.echo("审批已入账：" + str(approvals_lib.approvals_file(project)) if approved
+               else "未入账：gate 仍会要求人工审批（见上方提示）")
+
+
+def _require_human_reviewer(*, by: str, target: str, project: Path, approval: str,
+                            verdict: str, note: str = "",
+                            key: Optional[str] = None) -> bool:
+    """评审人身份校验 + （有凭证时）写审批账本。返回是否真的落了账。
+
+    分工是有意的：身份与"凭证才能入账"这两道门分别把关。
+    - 不传凭证：照常记录这次评审动作，但**不产生审批记录**，因此 gate 依旧拦——
+      AI 可以敲 `--by 张三`，却敲不出一条真人认过的断言面。
+    - 传凭证：凭证只能由 `atk approvals mint` 在交互式终端铸出，AI 驱动的 shell 造不出。
+
+    把硬门放在"权威产生处"（账本）而不是每条命令的参数上，是为了让绕过它必须做一件
+    机械上做不到的事，而不是仅仅漏填一个选项。
+    """
+    err = approvals_lib.check_reviewer(by, project,
+                                       author=approvals_lib.detect_author(target, project))
+    if err:
+        typer.secho(f"评审人校验失败：{err}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    if not (approval or "").strip():
+        typer.secho("未附 --approval 凭证：本次评审只记录动作，不产生审批记录，"
+                    "gate 仍会要求人工审批（开发者在终端 atk approvals mint 后重跑并带上凭证）",
+                    fg=typer.colors.YELLOW, err=True)
+        return False
+    bind_key = key if key is not None else ""
+    try:
+        approvals_lib.record_approval(target=target, key=bind_key, by=by, note=note,
+                                      token=approval, project=project)
+    except RuntimeError as e:
+        typer.secho(f"审批未落账：{e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    return True
+
+
+@app.command()
+def approvals(
+    action: str = typer.Argument(..., help="mint | list"),
+    target: str = typer.Argument("", help="mint 的对象：场景 YAML 路径，或 --run <id>"),
+    run: str = typer.Option("", "--run", help="按运行记录整单审批时给 run_id"),
+    pending: bool = typer.Option(False, "--pending", help="列出评审日志里尚未入账的条目"),
+    reports_dir: Optional[Path] = typer.Option(None, help=_LAYOUT_HELP + "；评审日志目录"),
+    project: Path = typer.Option(".", "--project", help="项目根目录"),
+):
+    """人工审批：在终端铸一次性凭证 / 查看账本。
+
+    mint 是**唯一**能写入审批记录的门：它要求交互式终端，AI/CI 驱动的 shell 一律 exit 2。
+    凭证绑定"对象 + 断言面指纹"，断言改一个字就得重新铸一枚。
+    """
+    if action not in ("mint", "list"):
+        raise typer.BadParameter("action 必须是 mint|list")
+    if action == "list":
+        items = approvals_lib.load_approvals(approvals_lib.approvals_file(project))
+        if not items:
+            typer.echo("（审批账本为空）")
+        for a in items:
+            typer.echo(f"{a.at or '-'}  {a.target}  {a.key[:18]}…  by {a.by}"
+                       + (f"  # {a.note}" if a.note else ""))
+        pend = sorted(approvals_lib.pending_dir(project).glob("*.json")) \
+            if approvals_lib.pending_dir(project).is_dir() else []
+        typer.echo(f"待核销凭证 {len(pend)} 枚")
+        if pending:
+            unrecorded = approvals_lib.pending_reviews(
+                _resolve(reports_dir, _layout_paths(project)["reports_dir"]), project)
+            if not unrecorded:
+                typer.echo("评审日志里没有未入账的条目")
+            for e in unrecorded:
+                typer.echo(f"未入账评审：{e['rel']}  by {e.get('by') or '-'} "
+                           f"{e.get('at') or ''}（日志说批过，但账本里没有对应记录）")
+        return
+    if run:
+        tgt, key = f"run:{run}", ""
+    else:
+        if not target:
+            raise typer.BadParameter("mint 需要给场景路径，或用 --run <run_id>")
+        tgt = approvals_lib._rel(Path(target), project)
+        key = approvals_lib.expect_hash(target)
+        if not key:
+            typer.secho("读不到该场景的断言面（文件不存在或无步骤），不予审批",
+                        fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+    display = ""
+    if target and not run:
+        display = "\n".join(approvals_lib.expect_surface(
+            __import__("yaml").safe_load(Path(target).read_text(encoding="utf-8"))))
+    try:
+        approvals_lib.mint(target=tgt, key=key, project=project, display=display)
+    except RuntimeError as e:
+        typer.secho(str(e), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
 
 
 #: 终端只给这么长的响应现场；完整内容留在 run.yaml 与 HTML 报告里
@@ -902,15 +1069,23 @@ def run(
         say(f"已写入运行记录 {rec.run_id}")
     if record_to:
         try:
-            _merge_report_into_run(report, record_to, runs_dir)
+            _merge_report_into_run(report, record_to, runs_dir, project)
         except KeyError as e:
             typer.secho(str(e), fg=typer.colors.RED, err=True)
             raise typer.Exit(code=2)
         say(f"已并入运行记录 {record_to}")
 
+    rid = created_run_id or record_to
+    if created_run_id:
+        # --record-new 走的是就地建记录，不经过 _merge_report_into_run，账本单独补一次
+        deps.record_execution(report.results, run_id=created_run_id,
+                              env=report.env_name, path=deps.ledger_path(project))
+
     if output_format == "json":
         pending_ui = report.pending_ui_count
         blocked = report.blocked_count
+        # next 里必须出现真实 run_id：--last 是 .atk/last-run.json 这个全局单槽，
+        # 两个 run 在飞时它会指向最新那条，照 --last 回填就串台了。
         # 失败现场直接进 JSON：不然 AI 只能读 reports/runs/<id>/run.yaml 才知道哪条断言、
         # 实际返回了什么，多数时候它只会照着 exit_code 报"失败了"。
         failed_steps = [
@@ -935,12 +1110,9 @@ def run(
                 "load_errors": report.load_errors,
                 "report": str(path) if path else None,
                 "junit": str(jp) if jp else None,
-                "run_id": created_run_id or record_to,
+                "run_id": rid,
             },
-            next_steps=([f'atk record --last --title "<意图>" --status <pass|fail|suspect|blocked> --note "<证据>"']
-                        if pending_ui else
-                        ["atk agent --format json"] if blocked else
-                        ["atk gate --last --format json"]),
+            next_steps=(_run_next(rid, pending_ui, blocked)),
             blockers=(list(report.load_errors) +
                       ([f"{blocked} 个场景受阻（blocked）"] if blocked else [])),
             ok=report.exit_code == 0 and not blocked,
@@ -1030,7 +1202,9 @@ def last(
         )
         raise typer.Exit(code=2)
     if output_format == "json":
-        typer.echo(envelope.dumps("last", data, next_steps=["atk gate --last --format json"]))
+        # 这条命令的全部意义就是解出 run_id，那 next 就没有理由还写着 --last
+        typer.echo(envelope.dumps(
+            "last", data, next_steps=[f"atk gate {data['run_id']} --format json"]))
         raise typer.Exit(code=0)
     typer.echo(f"run_id: {data['run_id']}")
     for k in ("title", "base", "head", "env", "created_at"):
@@ -1058,7 +1232,7 @@ def report(
         raise typer.Exit(code=2)
     if output_format == "json":
         typer.echo(envelope.dumps("report", {"run_id": run_id, "report": str(out)},
-                                  next_steps=["atk gate --last --format json"]))
+                                  next_steps=[f"atk gate {run_id} --format json"]))
     else:
         typer.echo(f"报告：{out}")
 
@@ -1082,7 +1256,8 @@ def gate(
     run_id = _run_id_arg(run_id, last, project)
     runs_dir = _resolve(runs_dir, _layout_paths(project)["runs_dir"])
     try:
-        passed, verdicts, review_line, _rec = _do_gate(run_id, head, repo, runs_dir)
+        passed, verdicts, review_line, _rec = _do_gate(run_id, head, repo, runs_dir,
+                                       root=project)
     except KeyError as e:
         typer.secho(str(e), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
@@ -1098,7 +1273,7 @@ def gate(
         if not passed:
             nxt = ["atk agent --format json"]      # 拦截原因很多，交回状态机判
         elif need_human:
-            nxt = ["atk review --last --by <姓名> --verdict approve"]
+            nxt = [f"atk review {run_id} --by <姓名> --verdict approve"]
         else:
             nxt = []
         typer.echo(envelope.dumps(
@@ -1108,8 +1283,8 @@ def gate(
             ok=passed,
             exit_code=0 if passed else 1,
             requires_human=need_human,
-            human_prompt=("介入点 2：门禁已放行但开发未整单确认，"
-                          "请 atk review --last --by <姓名> --verdict approve"
+            human_prompt=(f"介入点 2：门禁已放行但开发未整单确认，"
+                          f"请 atk review {run_id} --by <姓名> --verdict approve"
                           if (passed and need_human) else None),
         ))
         raise typer.Exit(code=0 if passed else 1)
@@ -1168,7 +1343,8 @@ def smoke(
     # 1) plan 逻辑复用（新建 run_id；priority 与执行侧同口径过滤复用清单）
     try:
         rec, affected, groups, reuse, errors = _do_plan(
-            base, head, repo, root, module_map, tag_list, title, runs_dir, priority
+            base, head, repo, root, module_map, tag_list, title, runs_dir, priority,
+            project=project,
         )
     except RuntimeError as e:
         typer.secho(str(e), fg=typer.colors.RED, err=True)
@@ -1193,8 +1369,10 @@ def smoke(
     for s in reuse:
         say(f"reuse: [{s.priority.value}] {s.scenario} ({s.file})")
 
-    # 2) run 逻辑复用：按 affected_modules 逐模块执行并逐个并入记录；
-    #    各模块结果内存合并后一次渲染 report-latest.html，junit 按模块分文件
+    # 2) run 逻辑复用：按**计划选中的模块**逐模块执行并逐个并入记录。
+    #    曾经这里是按 affected 跑的，于是 plan 保守多收的场景（无账本条目、端点相交、
+    #    场景内容变了）会被 smoke 的循环静默丢掉：计划 2 条、实跑 1 条，报告还全绿。
+    #    各模块结果内存合并后一次渲染 report-latest.html，junit 按模块分文件。
     def on_result(r: Any) -> None:
         if output_format == "json":
             return
@@ -1207,8 +1385,13 @@ def smoke(
         for line in _failure_lines(r.steps):
             typer.echo(line)
 
-    full_run = not affected
-    modules_to_run: list[Optional[str]] = list(affected) if affected else [None]
+    planned_modules = sorted({s.module for s in reuse})
+    if rec.selection_mode != deps.MODE_MODULE or not planned_modules:
+        full_run = True
+        modules_to_run: list[Optional[str]] = [None]
+    else:
+        full_run = False
+        modules_to_run = planned_modules
     multi = len(modules_to_run) > 1
     run_exit = 0
     run_error: Optional[Exception] = None
@@ -1248,7 +1431,7 @@ def smoke(
             say(f"JUnit：{junit_path}")
         module_reports.append((label, report))
         try:
-            _merge_report_into_run(report, run_id, runs_dir)
+            _merge_report_into_run(report, run_id, runs_dir, project)
         except KeyError as e:
             typer.secho(str(e), fg=typer.colors.RED, err=True)
             raise typer.Exit(code=2)
@@ -1314,7 +1497,8 @@ def smoke(
         gate_exit = 2
     else:
         try:
-            passed, verdicts, review_line, _grec = _do_gate(run_id, head, repo, runs_dir)
+            passed, verdicts, review_line, _grec = _do_gate(run_id, head, repo, runs_dir,
+                                           root=project)
         except KeyError as e:
             typer.secho(str(e), fg=typer.colors.RED, err=True)
             raise typer.Exit(code=2)
@@ -1335,13 +1519,9 @@ def smoke(
     except KeyError as e:
         typer.secho(str(e), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
-    case_fail = [s for s in fresh.scenarios if not s.passed and s.error_class in ("assertion", "config")]
-    pending = [i.title for i in fresh.intents if i.status == "pending"]
-    drafts = [
-        s.name for s in fresh.scenarios
-        if (s.file and is_draft(s.file))
-        or (s.draft and s.file and not Path(s.file).exists())
-    ]
+    case_fail = policy.failed_names(fresh.scenarios)
+    pending = policy.pending_titles(fresh.intents)
+    drafts = policy.draft_names(fresh.scenarios)
 
     if output_format == "json":
         next_steps: list[str] = []
@@ -1349,16 +1529,16 @@ def smoke(
         if pending:
             for t in pending:
                 next_steps.append(
-                    f'atk record --last --title "{t}" '
+                    f'atk record {run_id} --title "{t}" '
                     "--status <pass|fail|suspect|blocked> --note <实测结论>"
                 )
-            next_steps.append("atk gate --last --format json")
+            next_steps.append(f"atk gate {run_id} --format json")
         elif case_fail:
             next_steps.append(f"atk smoke --env {env}" if env else "atk smoke")
             hint = "有断言失败场景，先修场景或被测代码再重跑"
         else:
-            next_steps.append("atk review --last --by <姓名> --verdict approve")
-            next_steps.append("atk gate --last --format json")
+            next_steps.append(f"atk review {run_id} --by <姓名> --verdict approve")
+            next_steps.append(f"atk gate {run_id} --format json")
         if drafts:
             # 未评审草稿挡在 gate 前面，先走人工评审
             next_steps.insert(0, "atk review-draft <草稿.yaml> --by <姓名> --verdict approve")
@@ -1380,7 +1560,7 @@ def smoke(
                         1 for s in fresh.scenarios if s.error_class == "ui_pending"
                     ),
                 },
-                "failed_scenarios": [s.name for s in case_fail],
+                "failed_scenarios": list(case_fail),
                 "intents_pending": pending,
                 "drafts_unreviewed": drafts,
                 "full_run": full_run,
@@ -1398,16 +1578,18 @@ def smoke(
     else:
         typer.echo("待办清单：")
         if case_fail:
-            typer.echo(f"- 失败场景：{', '.join(s.name for s in case_fail)}（{len(case_fail)} 个待修复，见上断言详情）")
+            typer.echo(f"- 失败场景：{', '.join(case_fail)}"
+                       f"（{len(case_fail)} 个待修复，见上断言详情）")
         else:
             typer.echo("- 失败场景：无")
         if pending:
             typer.echo(
                 f"- 待实测意图 {len(pending)} 条：{', '.join(pending)}"
-                f"（AI 浏览器实测后 atk record --last 回填，未回填 gate 拦截）"
+                f"（AI 浏览器实测后 atk record {run_id} 回填，未回填 gate 拦截）"
             )
         elif not fresh.intents:
-            typer.echo("- 无覆盖意图：如需补充 UI 实测，用 atk record --last 回填（--status pass|fail|suspect|blocked）")
+            typer.echo(f"- 无覆盖意图：如需补充 UI 实测，用 atk record {run_id} 回填"
+                       "（--status pass|fail|suspect|blocked）")
         else:
             typer.echo(f"- 意图回填：已回填 {len(fresh.intents)} 条")
         typer.echo("- 草稿评审：如有 scenarios/**/gen-* 草稿场景需人工评审 expect 后入库")
@@ -1475,11 +1657,16 @@ local:
 """
 
 _INIT_MODULES = """\
-# 被测代码路径 -> 测试模块（scenarios/<module>/）。fnmatch 通配，首个命中生效。
-# 不配置也能用：smoke 无映射命中时自动全量执行（慢但不会漏测）。
+# 被测代码路径 -> 测试模块（场景的 module 字段，不是目录名）。fnmatch 通配，**全部命中都算**
+# （一个文件可以同时属多个模块，改一处就把它们都选上）。
+#
+# 这张表可以不配：算不清影响面时 plan 会跑全量（慢但不会静默漏测）。
+# 配了就要配全——某个模块有场景却没有规则，增量选择会永远选不到它，
+# `atk validate` 会双向对账并 exit 1。
 modules:
   example:
-    - "src/**"
+    files:
+      - "src/**"
 """
 
 _INIT_SCENARIO = """\
@@ -1524,14 +1711,24 @@ def _env_text_with_url(env_name: str, url: str, extra_vars: dict[str, str] | Non
 
 
 def _modules_text_with(mods: list[str]) -> str:
+    """给 --modules 生成的映射骨架。
+
+    额外固定带上 `example`：`atk init` 不带 --modules 时会写一条
+    scenarios/demo/example.yaml（module: example）。缺了它，先带 --modules
+    初始化、之后再补一次裸 init 的项目就会出现"有场景没映射"的静默漏选——
+    这条正是 atk validate 的增量选择对账会报的错。
+    """
     lines = [
-        "# 被测代码路径 -> 测试模块（scenarios/<module>/）。fnmatch 通配，首个命中生效。",
-        "# 下面的通配是保守猜测，请改成被测仓库真实代码路径；不配置也能用（smoke 全量跑）。",
+        "# 被测代码路径 -> 测试模块（场景的 module 字段，不是目录名）。fnmatch 通配，"
+        "**全部命中都算**。",
+        "# 下面的通配是保守猜测，请改成被测仓库真实代码路径；不配置也能用（plan 会跑全量）。",
+        "# 配了就要配全：模块有场景却没规则时 atk validate 会 exit 1。",
         "modules:",
     ]
-    for m in mods:
+    for m in list(dict.fromkeys([*mods, "example"])):
         lines.append(f"  {m}:")
-        lines.append(f'    - "{m}/**"')
+        lines.append("    files:")
+        lines.append(f'      - "{m}/**"' if m in mods else '      - "src/**"')
     return "\n".join(lines) + "\n"
 
 
@@ -1625,7 +1822,8 @@ def init(
     if not legacy:
         gitignore = root / ".gitignore"
         needed = ["# atk 可再生产物（场景库 .atk/scenarios/ 与配置请照常提交）",
-                  ".atk/reports/", ".atk/last-run.json", ".atk/manifest.json"]
+                  ".atk/reports/", ".atk/last-run.json", ".atk/manifest.json",
+                  ".atk/deps.yaml"]
         if not gitignore.exists():
             gitignore.write_text("\n".join(needed) + "\n", encoding="utf-8")
             created.append(str(gitignore))
@@ -1922,16 +2120,17 @@ def _agent_run_verdict(root: Path, L: dict[str, Path], run_id: str, head: str,
         detail = str(e.args[0]) if e.args else f"记录 {run_id} 不可用"
         return ("run_missing", ['atk smoke --title "<功能>" --base <基线> --format json'],
                 [f"last-run 指针指向的记录不存在：{detail}"], False, None)
-    rerun = [f"atk run --env {env} --record-new"] if env else ["atk run --record-new"]
-    pending = [i.title for i in rec.intents if i.status == "pending"]
-    drafts = [s.name for s in rec.scenarios
-              if (s.file and is_draft(s.file)) or (s.draft and s.file and not Path(s.file).exists())]
-    case_fail = [s.name for s in rec.scenarios
-                 if not s.passed and s.error_class in ("assertion", "config")]
-    blocked = [s.name for s in rec.scenarios
-               if not s.passed and s.error_class not in ("assertion", "config", "ui_pending", "skipped")]
+    # 重跑必须并回原记录：--record-new 会另起一条空记录，把已回填的 UI 意图整批丢掉，
+    # 于是"排查完环境重跑一次"等于从头再来。plan/run 本来就推荐 --record-to。
+    target = f" --record-to {run_id}"
+    rerun = ([f"atk run --env {env}{target}"] if env else [f"atk run{target}"])
+    pending = policy.pending_titles(rec.intents)
+    drafts = policy.draft_names(rec.scenarios)
+    case_fail = policy.failed_names(rec.scenarios)
+    blocked = policy.blocked_names(rec.scenarios)
     try:
-        passed, verdicts, _line, _rec = _do_gate(run_id, head, repo, L["runs_dir"])
+        passed, verdicts, _line, _rec = _do_gate(run_id, head, repo, L["runs_dir"],
+                                       root=root)
         gate_blockers = [msg for ok, msg, _w in verdicts if not ok]
     except (KeyError, RuntimeError) as e:
         return ("gate_unavailable", [], [f"门禁不可执行：{e}"], False, None)
@@ -1944,8 +2143,8 @@ def _agent_run_verdict(root: Path, L: dict[str, Path], run_id: str, head: str,
                 f"介入点 1：请开发审定这些草稿的 expect：{', '.join(drafts[:5])}")
     if pending:
         return ("ui_pending",
-                [f'atk record --last --title "{t}" --status <pass|fail|suspect|blocked> --note "<证据>"'
-                 for t in pending],
+                [f'atk record {run_id} --title "{t}" '
+                 '--status <pass|fail|suspect|blocked> --note "<证据>"' for t in pending],
                 [f"{len(pending)} 条 UI 意图未回填实测结论"], False, None)
     if blocked:
         return ("run_blocked", rerun, [f"{len(blocked)} 个场景受阻（blocked）"], True,
@@ -1955,7 +2154,8 @@ def _agent_run_verdict(root: Path, L: dict[str, Path], run_id: str, head: str,
     if not passed:
         return ("gate_blocking", ["atk agent --format json"], list(gate_blockers), False, None)
     if review != "approved":
-        return ("await_run_review", ["atk review --last --by <姓名> --verdict approve"], [], True,
+        return ("await_run_review",
+                [f"atk review {run_id} --by <姓名> --verdict approve"], [], True,
                 "介入点 2：门禁已放行，需要开发整单确认后才能合并")
     return ("ready_to_merge", [], [], False, None)
 

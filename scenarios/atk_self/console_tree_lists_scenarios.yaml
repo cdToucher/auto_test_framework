@@ -1,0 +1,19 @@
+scenario: 控制台能列出现有场景库
+module: atkself
+priority: P1
+tags: [smoke, atk-self]
+env: atkself
+steps:
+  - api:
+      call: "GET /api/tree"
+      expect:
+        status: 200
+        dirs: not_null
+        scenarios: "len: 1..2000"
+  - api:
+      call: "GET /api/scenarios/atk_self/console_health.yaml"
+      expect:
+        status: 200
+        data.scenario: 控制台健康检查可用
+        data.module: atkself
+        mtime: not_null

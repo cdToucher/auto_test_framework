@@ -35,3 +35,10 @@ xinfei:
   vars:
     xf_cookie: "${env:ATK_XF_COOKIE}"
     xf_token: "${env:ATK_XF_TOKEN}"
+
+# atk 自举：被测系统是 atk 自己的 Web 控制台（唯一可 HTTP 观测的自身表面）。
+# 先起控制台再跑：atk console --port 8901 ；ATK_SELF_BASE_URL 由调用方注入，不落库。
+atkself:
+  base_url: "${env:ATK_SELF_BASE_URL}"
+  vars: {}
+  trust_env: false

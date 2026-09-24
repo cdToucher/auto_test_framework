@@ -81,7 +81,7 @@ def test_reject_requires_note_and_moves_file(tmp_path, monkeypatch):
     assert (tmp_path / "reports" / "rejected" / "gen-abc-1.yaml").exists()
 
 
-def test_gate_blocks_unreviewed_draft(tmp_path, monkeypatch):
+def test_gate_blocks_unreviewed_draft(tmp_path, monkeypatch, human_approval):
     import subprocess
 
     from atk.run_store import ScenarioSummary, StepSummary, create_run, save_run
@@ -101,8 +101,17 @@ def test_gate_blocks_unreviewed_draft(tmp_path, monkeypatch):
     save_run(rec, runs_dir=tmp_path / "reports" / "runs")
     r = runner.invoke(app, ["gate", rec.run_id, "--repo", str(tmp_path)])
     assert r.exit_code == 1 and "未评审" in r.output
-    # 转正后放行
-    ok = runner.invoke(app, ["review-draft", str(f), "--by", "qa", "--verdict", "approve"])
-    assert ok.exit_code == 0
+    # 去掉 tag 但拿不出终端凭证：动作记录下来了，审批记录却没有，gate 依然拦
+    no_token = runner.invoke(app, ["review-draft", str(f), "--by", "qa",
+                                   "--verdict", "approve"])
+    assert no_token.exit_code == 0
     r2 = runner.invoke(app, ["gate", rec.run_id, "--repo", str(tmp_path)])
-    assert r2.exit_code == 0, r2.output
+    assert r2.exit_code == 1, r2.output
+    assert "未经人工审批" in r2.output
+    # 真人铸凭证后放行
+    token = human_approval(str(f))
+    ok = runner.invoke(app, ["review-draft", str(f), "--by", "qa", "--verdict", "approve",
+                             "--approval", token])
+    assert ok.exit_code == 0, ok.output
+    r3 = runner.invoke(app, ["gate", rec.run_id, "--repo", str(tmp_path)])
+    assert r3.exit_code == 0, r3.output

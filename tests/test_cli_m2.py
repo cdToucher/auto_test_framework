@@ -86,6 +86,8 @@ def test_record_appends_intent(m2_repo, tmp_path, monkeypatch):
             "快照断言通过",
             "--evidence",
             str(shot),
+            # 这条记录没有 run 自动登记的 pending 意图，所以要显式声明"我是新增覆盖面"
+            "--allow-new-intent",
         ],
     )
     assert r.exit_code == 0, r.output
@@ -116,7 +118,8 @@ def test_record_from_json_appends_intent(m2_repo, tmp_path, monkeypatch):
         ),
         encoding="utf-8",
     )
-    r = CliRunner().invoke(app, ["record", rec.run_id, "--from-json", str(payload)])
+    r = CliRunner().invoke(app, ["record", rec.run_id, "--from-json", str(payload),
+                                "--allow-new-intent"])
     assert r.exit_code == 0, r.output
     got = load_run(rec.run_id, runs_dir=m2_repo / "reports" / "runs")
     assert got.intents[0].title == "页面添加待办并完成"

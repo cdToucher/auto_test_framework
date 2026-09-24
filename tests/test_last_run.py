@@ -114,7 +114,7 @@ def test_last_command_without_pointer_exits_2(tmp_path):
     assert res.exit_code == 2
 
 
-def test_record_accepts_last(proj):
+def test_record_accepts_last(proj, tmp_path):
     from atk.run_store import create_run, save_run
 
     runs = proj / "reports" / "runs"
@@ -122,9 +122,12 @@ def test_record_accepts_last(proj):
     save_run(rec, runs)
     write_last_run(proj, rec.run_id)
 
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(b"\x89PNG")
     res = cli.invoke(
         app,
         ["record", "--last", "--title", "页面下单", "--status", "pass",
+         "--note", "订单出现在待支付列表", "--evidence", str(shot), "--allow-new-intent",
          "--project", str(proj), "--runs-dir", str(runs)],
     )
     assert res.exit_code == 0, res.output
@@ -136,7 +139,7 @@ def test_record_without_run_id_and_last_exits_2(proj):
     assert res.exit_code == 2
 
 
-def test_record_json_output(proj):
+def test_record_json_output(proj, tmp_path):
     from atk.run_store import create_run, save_run
 
     runs = proj / "reports" / "runs"
@@ -144,16 +147,22 @@ def test_record_json_output(proj):
     save_run(rec, runs)
     write_last_run(proj, rec.run_id)
 
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(b"\x89PNG")
     res = cli.invoke(
         app,
         ["record", "--last", "--title", "页面下单", "--status", "pass",
+         "--note", "订单出现在待支付列表", "--evidence", str(shot), "--allow-new-intent",
          "--project", str(proj), "--runs-dir", str(runs), "--format", "json"],
     )
     assert res.exit_code == 0, res.output
     payload = json.loads(res.output)
     assert payload["run_id"] == rec.run_id
     assert payload["status"] == "pass"
-    assert payload["next"] == ["atk gate --last --format json"]
+    # 生成的 next 带真实 run_id：--last 是全局单槽，两条 run 同时在飞时照 next 回填会串台。
+    # --last 仍然可以作为人输入的命令行参数用（本用例自己就是用它定位记录的）。
+    assert payload["next"] == [f"atk gate {rec.run_id} --format json"]
+    assert "--last" not in str(payload["next"])
 
 
 def test_gate_accepts_last(proj):

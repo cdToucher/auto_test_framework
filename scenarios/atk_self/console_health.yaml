@@ -1,0 +1,12 @@
+scenario: 控制台健康检查可用
+module: atkself
+priority: P0
+tags: [smoke, atk-self]
+env: atkself
+steps:
+  - api:
+      call: "GET /api/health"
+      expect:
+        status: 200
+        ok: not_null
+        global: not_null

@@ -143,10 +143,14 @@ def test_record_upserts_instead_of_duplicating(proj, tmp_path):
     cli_mod._register_pending_ui_intents(rec, report)
     save_run(rec, runs)
 
+    shot = tmp_path / "list.png"
+    shot.write_bytes(b"\x89PNG evidence")
     payload = tmp_path / "ui.json"
     payload.write_text(
         json.dumps(
-            {"title": "页面下单后列表显示待支付", "status": "pass", "note": "已在列表查到该订单"}
+            {"run_id": rec.run_id,
+             "title": "页面下单后列表显示待支付", "status": "pass",
+             "note": "已在列表查到该订单", "evidence": [str(shot)]}
         ),
         encoding="utf-8",
     )

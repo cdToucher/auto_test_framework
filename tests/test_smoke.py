@@ -1,4 +1,5 @@
 """atk smoke 一键命令：plan→run(按模块)→report→gate 函数复用。"""
+import json
 import re
 import subprocess
 
@@ -121,7 +122,7 @@ def _make_multi_repo(base, mock_base_url):
     )
     (sc_other / "other.yaml").write_text(
         "scenario: other-冒烟\nmodule: other\npriority: P0\ntags: [smoke]\nenv: local\n"
-        "steps:\n  - api:\n      call: \"GET /ping\"\n      expect: {status: 200}\n",
+        "steps:\n  - api:\n      call: \"GET /api/orders\"\n      expect: {status: 200}\n",
         encoding="utf-8",
     )
     (base / "reports").mkdir()
@@ -130,7 +131,12 @@ def _make_multi_repo(base, mock_base_url):
     return base
 
 
-def test_smoke_runs_only_affected_module(tmp_path, mock_base_url, monkeypatch):
+def test_smoke_selection_is_conservative_once_then_scoped(tmp_path, mock_base_url, monkeypatch):
+    """无观测条目的场景先跑一次（testmon 兜底），建立账本后才按影响面子集排除。
+
+    两条都要测：只测"排除"会放过一个静默漏测的洞——从没跑过的场景没有任何证据
+    说明它与本次改动无关。
+    """
     repo = _make_multi_repo(tmp_path / "multi", mock_base_url)
     monkeypatch.chdir(repo)
     d = repo / "src" / "demo"
@@ -138,21 +144,52 @@ def test_smoke_runs_only_affected_module(tmp_path, mock_base_url, monkeypatch):
     (d / "logic.py").write_text("x=1")
     _git("add", ".", cwd=repo)
     _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "change demo", cwd=repo)
+
     r = CliRunner().invoke(
         app, ["smoke", "--base", "HEAD~1", "--head", "HEAD", "--env", "local"]
     )
     assert r.exit_code == 0, r.output
-    run_id = _run_id(r.output)
+    from atk.deps import ledger_path, load_ledger
+
+    led = load_ledger(ledger_path(repo))
+    assert len(led) == 2, f"首轮应把两条场景都跑掉并建立账本，实际 {led}"
+    assert "other-冒烟" in r.output, "没有观测条目时不许把另一模块排除掉"
+
+    # 再来一次同样的改动：账本已有条目、other 与本次影响面无关 → 只跑 demo
+    # 只 add 被测代码：把 atk 自己的 reports/*.yaml 提交进去会被判成"未映射的代码变更"，
+    # 于是全量兜底先触发，测不到子集选择这一支（真实项目由 atk init 写好的 .gitignore 隔开）
+    (d / "logic.py").write_text("x=2")
+    _git("add", "src/demo/logic.py", cwd=repo)
+    _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "change demo again",
+         cwd=repo)
+    r2 = CliRunner().invoke(
+        app, ["smoke", "--base", "HEAD~1", "--head", "HEAD", "--env", "local"]
+    )
+    assert r2.exit_code == 0, r2.output
+    run_id = _run_id(r2.output)
     from atk.run_store import load_run
 
     rec = load_run(run_id, runs_dir=repo / "reports" / "runs")
+    assert [s.module for s in rec.scenarios] == ["demo"], rec.scenarios
     assert rec.affected_modules == ["demo"]
-    assert len(rec.scenarios) == 1, rec.scenarios
-    assert rec.scenarios[0].module == "demo"
-    assert rec.scenarios[0].name == "demo-冒烟"
-    assert "other-冒烟" not in r.output
-    assert "demo-冒烟" in r.output
-    _assert_todo_three_lines(r.output, run_id)
+    assert "other-冒烟" not in r2.output
+    assert "demo-冒烟" in r2.output
+    _assert_todo_three_lines(r2.output, run_id)
+
+
+def test_smoke_never_selects_zero_when_map_is_missing(tmp_path, mock_base_url, monkeypatch):
+    """映射表被删 = 影响面算不清 = 跑全库，绝不能"选 0 个然后按通过算"。"""
+    repo = _make_multi_repo(tmp_path / "nomap", mock_base_url)
+    (repo / "config" / "modules.yaml").unlink()
+    _git("add", "-A", cwd=repo)
+    _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "drop map", cwd=repo)
+    monkeypatch.chdir(repo)
+    r = CliRunner().invoke(
+        app, ["smoke", "--base", "HEAD~1", "--head", "HEAD", "--env", "local",
+              "--format", "json"])
+    assert r.exit_code == 0, r.output
+    payload = json.loads(r.output)
+    assert payload["scenarios"]["total"] == 2, payload["scenarios"]
 
 
 def test_smoke_env_missing_exits_2_and_skips_gate(tmp_path, mock_base_url, monkeypatch):

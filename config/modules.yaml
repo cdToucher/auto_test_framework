@@ -1,11 +1,40 @@
-# 被测代码路径 -> 测试模块（scenarios/<module>/）。fnmatch 通配，首个命中生效。
-# 团队接入时：把左侧规则替换为你们被测仓库的目录约定。
+# 被测代码路径 -> 测试模块（场景的 module 字段，不是目录名）。fnmatch 通配，**全部命中都算**
+# （一个文件可以属多个模块：改 shop_pro.py 同时影响 order/auth/shop）。
+#
+# 接入自己项目时：把左侧规则换成你们被测仓库的目录约定，并保证
+#   1) 每个真实存在的模块至少被一条规则命中；
+#   2) 每条规则命中的模块名在场景库里真的有场景。
+# 这两条 `atk validate` 会双向检查，对不上会 exit 1——本文件以前就是错的：
+# examples/shop_pro.py（12 个场景的被测系统）压根不在表里，改它选中 0 个场景。
+#
+# 表缺失/为空/不可解析时 plan 不再"选 0 个"，而是跑全量（见 atk/deps.py）。
 modules:
-  demo:
-    - "examples/mock_server.py"
+  order:
+    files:
+      - "examples/shop_pro.py"
+      - "examples/mock_server.py"
+  auth:
+    files:
+      - "examples/shop_pro.py"
+      - "examples/mock_server.py"
+  shop:
+    files:
+      - "examples/shop_pro.py"
+  example:
+    files:
+      - "examples/mock_server.py"
   todo:
-    - "examples/demo_app.py"
+    files:
+      - "examples/demo_app.py"
   ui:
-    - "examples/demo_app.py"
+    files:
+      - "examples/demo_app.py"
   spashop:
-    - "examples/spa_shop.py"
+    files:
+      - "examples/spa_shop.py"
+  # atk 测 atk：改控制台或 CLI 时跑自举冒烟（scenarios/atk_self/）
+  atkself:
+    files:
+      - "atk/console/*"
+      - "atk/console/**"
+      - "atk/cli.py"

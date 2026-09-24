@@ -137,6 +137,10 @@ class Priority(str, Enum):
     P2 = "P2"
 
 
+#: 优先级排序。select 与依赖账本共用一份，两处的"P1 含 P0"必须是同一个比较。
+PRIORITY_RANK: dict[Priority, int] = {Priority.P0: 0, Priority.P1: 1, Priority.P2: 2}
+
+
 class ApiExpect(BaseModel):
     """单条断言：status 或 响应 JSON 点路径。
 

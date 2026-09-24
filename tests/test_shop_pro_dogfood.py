@@ -83,6 +83,8 @@ def test_full_smoke_record_gate(shop_project, tmp_path, monkeypatch):
     result.write_text(
         json.dumps(
             {
+                # 回填必须指名填给哪条记录：不带 run_id 的 payload 可以套在任意记录上
+                "run_id": manifest["run_id"],
                 "title": "页面完成加购用券下单并显示待支付",
                 "status": "pass",
                 "note": "页面弹单号 SP-000x，订单列表 pending、应付 50 元",

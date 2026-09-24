@@ -8,6 +8,7 @@ import httpx
 
 from ..store.loader import load_scenarios, select
 from ..store.models import ApiStep, Priority, Scenario
+from ..policy import Tally, project, tally
 from .api_executor import ApiExecutor, StepResult
 from .env import EnvConfig, load_env, substitute
 
@@ -35,8 +36,11 @@ class ScenarioResult:
 
 @dataclass
 class RunReport:
-    """一次 run 的汇总。计数口径只在这里定义，CLI / JSON / HTML 报告共用，
-    避免每个出口各自算一套"失败数"。"""
+    """一次 run 的汇总。
+
+    计数一律委托 policy.tally：这里只是执行期的便捷出口，不再是口径的定义处。
+    CLI / JSON / HTML / junit / gate 读的是同一张 TIER 表。
+    """
     env_name: str = ""
     started_at: str = ""
     results: list[ScenarioResult] = field(default_factory=list)
@@ -44,21 +48,23 @@ class RunReport:
     env_warnings: list[str] = field(default_factory=list)
 
     @property
+    def _tally(self) -> Tally:
+        return tally(self.results)
+
+    @property
     def total(self) -> int:
         """本次执行的场景数（含受阻与待实测）。"""
-        return len(self.results)
+        return self._tally.total
 
     @property
     def passed_count(self) -> int:
         """全部步骤断言成立的场景数。"""
-        return sum(1 for r in self.results if r.passed)
+        return self._tally.passed
 
     @property
     def failed_count(self) -> int:
         """真实用例失败（断言/配置错误），环境受阻不计入。"""
-        return sum(
-            1 for r in self.results if not r.passed and r.error_class in ("assertion", "config")
-        )
+        return self._tally.failed
 
     @property
     def pending_ui_count(self) -> int:
@@ -73,13 +79,7 @@ class RunReport:
     @property
     def blocked_count(self) -> int:
         """未通过且非用例失败、非待实测、非跳过：环境异常 / UI 未知错误。"""
-        return (
-            self.total
-            - self.passed_count
-            - self.failed_count
-            - self.pending_ui_count
-            - self.skipped_count
-        )
+        return self._tally.blocked
 
     @property
     def environment_errors(self) -> int:
@@ -88,16 +88,12 @@ class RunReport:
 
     @property
     def exit_code(self) -> int:
-        """进程退出码：1 用例失败或有加载错误，2 受阻，0 其余。
+        """进程退出码，直接取 policy.project：1 用例失败 · 2 受阻或加载错误 · 0 其余。
 
         UI 待实测不算本次执行的失败：定性由 atk gate 检查意图是否已 record 回填，
         否则一次纯 API 冒烟会被无关的 UI 意图拖成 exit 1。
         """
-        if self.failed_count or self.load_errors:
-            return 1
-        if self.blocked_count:
-            return 2
-        return 0
+        return project(self._tally, load_errors=len(self.load_errors))
 
 
 class Runner:
