@@ -164,6 +164,7 @@ class GateContext:
     head: str
     runs_dir: Path
     root: Path = field(default_factory=lambda: Path("."))
+    allow_unbound: bool = False
     _changed: Optional[list[str]] = field(default=None, repr=False)
     _dirty: Optional[list[str]] = field(default=None, repr=False)
 
@@ -241,6 +242,32 @@ def _no_base_ref(ctx: GateContext) -> list[Note]:
     if not ctx.rec.base_ref:
         return [Note("运行记录未绑定 Git 基线，跳过变更一致性检查")]
     return []
+
+
+def _unbound_record(ctx: GateContext) -> list[Note]:
+    """git 可用、记录却没绑定任何基线 → 这条记录不能当合并依据。
+
+    没有这一项，`atk run --record-new` 跑出一条与改动毫无关系的记录就能让 gate 变绿：
+    覆盖检查要求 affected 非空、审批检查要求 base_ref，两者都会因为"没绑基线"而静默跳过。
+    非 git 项目或有意为之的一次性试跑，用 `atk gate --allow-unbound` 显式放行。
+    """
+    if ctx.rec.base_ref:
+        return []
+    if getattr(ctx, "allow_unbound", False):
+        # 显式放行也要留痕：一条与任何变更无关的记录不该被读成"门禁过了"
+        return [Note(f"记录 {ctx.rec.run_id} 未绑定基线，已按 --allow-unbound 放行："
+                     "本判定不构成合并依据", warn=True)]
+    try:
+        from .diff_analyzer.git_diff import is_git_repository
+        git_ok = is_git_repository(str(ctx.repo))
+    except OSError:
+        git_ok = False
+    if not git_ok:
+        return [Note("记录未绑定 Git 基线且当前目录不是 git 仓库，跳过变更一致性检查",
+                     warn=True)]
+    return [Note(f"运行记录 {ctx.rec.run_id} 未绑定任何 Git 基线：它没有描述"
+                 "「哪次变更被测过」，不能作为合并门禁依据。用 atk plan --base <基线> 建记录，"
+                 "或（明知故犯时）atk gate --allow-unbound", ok=False)]
 
 
 def _change_drift(ctx: GateContext) -> list[Note]:
@@ -400,7 +427,15 @@ def _unapproved_expects(ctx: GateContext) -> list[Note]:
             bad.append(f"{s.name}（{why}）")
     if not bad:
         return []
-    return [Note(f"{len(bad)} 份场景的断言未经人工审批: " + "; ".join(bad)
+    from .approvals import approvals_file, load_approvals, valid_approvals
+    good, invalid = valid_approvals(approvals_file(ctx.root))
+    tail = ""
+    if invalid and not good:
+        tail = (f"；账本里有 {len(invalid)} 条签名无效的条目"
+                "（手改过或来自另一把密钥，一律不认）")
+    elif invalid:
+        tail = f"；另有 {len(invalid)} 条签名无效的条目未被采信"
+    return [Note(f"{len(bad)} 份场景的断言未经人工审批: " + "; ".join(bad) + tail
                  + "（开发者在终端 atk approvals mint <文件> 铸凭证，再 "
                    "atk review-draft <文件> --by <人> --verdict approve --approval <码>）",
                  ok=False)]
@@ -414,6 +449,12 @@ def _ledger_consistency(ctx: GateContext) -> list[Note]:
     """
     from . import events
 
+    chain_ok, why = events.verify_chain(ctx.runs_dir, ctx.rec.run_id)
+    if not chain_ok:
+        legacy = not events.read(events.events_path(ctx.runs_dir, ctx.rec.run_id))
+        if legacy and "为空" in why:
+            return [Note("记录无事件流水（旧记录），跳过一致性校验", warn=True)]
+        return [Note(f"事件流水不可信：{why}", ok=False)]
     digest = events.last_save_sha(ctx.runs_dir, ctx.rec.run_id)
     if digest is None:
         return [Note("记录无事件流水（旧记录），跳过一致性校验", warn=True)]
@@ -454,6 +495,7 @@ def _deps_stale(ctx: GateContext) -> list[Note]:
 GATE_CHECKS: tuple[GateCheck, ...] = (
     GateCheck("empty_record", True, _empty_record),
     GateCheck("no_base_ref", False, _no_base_ref),
+    GateCheck("unbound_record", True, _unbound_record),
     GateCheck("change_drift", True, _change_drift),
     GateCheck("head_advanced", True, _head_advanced),
     GateCheck("legacy_no_head_commit", False, _legacy_head_commit),

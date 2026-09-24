@@ -268,7 +268,7 @@ def test_legacy_record_without_events_only_warns(proj):
     from atk.run_store import ScenarioSummary, StepSummary, create_run, save_run
 
     runs = proj / "reports" / "runs"
-    rec = create_run(runs_dir=runs)
+    rec = create_run(runs_dir=runs, base_ref="HEAD", head_ref="HEAD")
     rec.scenarios.append(ScenarioSummary(name="s", module="order", passed=True,
                                          error_class="none",
                                          steps=[StepSummary(title="t", passed=True)]))

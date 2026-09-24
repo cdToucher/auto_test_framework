@@ -22,6 +22,8 @@ from typing import Any, Optional
 
 import yaml
 
+from . import keystore
+
 EVENTS_FILE = "events.yaml"
 
 
@@ -48,9 +50,23 @@ def sha_of(path: Path | str) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
 
+def _event_payload(run_id: str, ev: dict, prev_sig: str) -> str:
+    """签名覆盖序号、时间、类型、对象与全部附加字段，并链住上一条的签名。
+
+    链式是必需的：只签最后一条的话，改完 run.yaml 再重写那一条就能自圆其说。
+    """
+    body = keystore.canonical(
+        [str(ev.get("seq")), str(ev.get("at")), str(ev.get("kind")), run_id,
+         str(ev.get("actor")), str(ev.get("target")),
+         ";".join(f"{k}={ev[k]}" for k in sorted(ev)
+                  if k not in ("seq", "at", "kind", "actor", "target", "esig"))]
+        + [prev_sig])
+    return body
+
+
 def append(runs_dir: Path | str, run_id: str, *, kind: str, actor: str = "",
            target: str = "", **fields: Any) -> Event:
-    """追加一条事件。写失败绝不静默：流水断了审计就没意义。"""
+    """追加一条事件（带链式签名）。写失败绝不静默：流水断了审计就没意义。"""
     ev = Event(at=now(), kind=kind, run_id=run_id, actor=actor, target=target)
     for k, v in fields.items():
         if v is not None:
@@ -58,6 +74,8 @@ def append(runs_dir: Path | str, run_id: str, *, kind: str, actor: str = "",
     p = events_path(runs_dir, run_id)
     items = read(p)
     ev["seq"] = len(items) + 1
+    prev = str(items[-1].get("esig") or "") if items else ""
+    ev["esig"] = keystore.sign(_event_payload(run_id, dict(ev), prev))
     items.append(dict(ev))
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".yaml.tmp")
@@ -76,6 +94,30 @@ def read(path: Path | str) -> list[dict]:
     except Exception:
         return []
     return [d for d in data if isinstance(d, dict)] if isinstance(data, list) else []
+
+
+def verify_chain(runs_dir: Path | str, run_id: str) -> tuple[bool, str]:
+    """整条流水是否可信：链上每一枚签名都要对得上，且必须有一把可用密钥。
+
+    返回 (是否有效, 说明)。无密钥时判无效——那等于从没有人（或有钥匙的进程）写过流水，
+    而 gate 要的就是这个区分。空流水也判无效：新记录还没落过盘，不该被当成已核验。
+    """
+    items = read(events_path(runs_dir, run_id))
+    if not keystore.available():
+        return (False, keystore.missing_key_hint())
+    if not items:
+        return (False, "事件流水为空，无法核验")
+    prev = ""
+    for i, ev in enumerate(items, start=1):
+        if int(ev.get("seq") or 0) != i:
+            return (False, f"第 {i} 条事件序号异常（{ev.get('seq')}），流水被增删过")
+        if ev.get("run_id") != run_id:
+            return (False, f"第 {i} 条事件的 run_id 与目录不符")
+        body = _event_payload(run_id, {k: v for k, v in ev.items()}, prev)
+        if not keystore.verify(body, str(ev.get("esig") or "")):
+            return (False, f"第 {i} 条事件签名无效，流水在落盘后被改写过")
+        prev = str(ev.get("esig") or "")
+    return (True, "")
 
 
 def latest(paths: list[dict], *, kind: str, target: Optional[str] = None) -> Optional[dict]:

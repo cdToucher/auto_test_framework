@@ -78,7 +78,7 @@ def test_which_checks_block_is_a_deliberate_choice():
     不是"某段代码恰好没把 ok 设成 False"。
     """
     assert {c.id for c in policy.GATE_CHECKS if c.blocking} == {
-        "empty_record", "change_drift", "head_advanced", "case_fail",
+        "empty_record", "unbound_record", "change_drift", "head_advanced", "case_fail",
         "change_covered", "deps_stale", "ledger_consistency", "unreviewed_drafts",
         "unapproved_expects", "unresolved_intents", "pending_intents",
     }

@@ -308,7 +308,7 @@ def _run_next(rid: Optional[str], pending_ui: int, blocked: int) -> list[str]:
 
 def _do_gate(
     run_id: str, head: str, repo: Path, runs_dir: Path,
-    root: Optional[Path] = None,
+    root: Optional[Path] = None, allow_unbound: bool = False,
 ) -> tuple[bool, list[tuple[bool, str, bool]], str, RunRecord]:
     """gate 判定：跑 policy.GATE_CHECKS。抛 KeyError(记录不存在)/RuntimeError(git)。
 
@@ -326,6 +326,7 @@ def _do_gate(
         head=head,
         runs_dir=Path(runs_dir),
         root=Path(root) if root is not None else Path("."),
+        allow_unbound=allow_unbound,
     )
     passed, verdicts = policy.run_checks(ctx)
     return passed, verdicts, policy.review_line(rec), rec
@@ -402,6 +403,7 @@ def _gate_json(
     verdicts: list[tuple[bool, str, bool]],
     review_line: str,
     rec: RunRecord,
+    unbound_allowed: bool = False,
 ) -> dict[str, Any]:
     return {
         "run_id": rec.run_id,
@@ -410,6 +412,7 @@ def _gate_json(
         "verdicts": [{"ok": ok, "message": msg, "warn": warn} for ok, msg, warn in verdicts],
         "review": review_line,
         "blocking": [msg for ok, msg, _ in verdicts if not ok],
+        "unbound_allowed": unbound_allowed,
         "warnings": [review_line] + [msg for ok, msg, warn in verdicts if ok and warn],
     }
 
@@ -1244,6 +1247,9 @@ def gate(
     repo: Path = typer.Option("."),
     runs_dir: Optional[Path] = typer.Option(None, help=_LAYOUT_HELP),
     last: bool = typer.Option(False, "--last", help="使用最近一次运行记录（无需拼 run_id）"),
+    allow_unbound: bool = typer.Option(
+        False, "--allow-unbound",
+        help="明知故犯：允许判定一条没绑定任何 Git 基线的记录（试跑用，合并门禁不该用）"),
     project: Path = typer.Option(".", "--project", help="项目根目录（.atk/last-run.json 所在位置）"),
     output_format: str = typer.Option("text", "--format", help="输出格式：text|json"),
 ):
@@ -1257,7 +1263,7 @@ def gate(
     runs_dir = _resolve(runs_dir, _layout_paths(project)["runs_dir"])
     try:
         passed, verdicts, review_line, _rec = _do_gate(run_id, head, repo, runs_dir,
-                                       root=project)
+                                       root=project, allow_unbound=allow_unbound)
     except KeyError as e:
         typer.secho(str(e), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
@@ -1266,7 +1272,8 @@ def gate(
         raise typer.Exit(code=2)
 
     if output_format == "json":
-        payload = _gate_json(passed, verdicts, review_line, _rec)
+        payload = _gate_json(passed, verdicts, review_line, _rec,
+                             unbound_allowed=allow_unbound)
         rev_status, _rev = review_status(_rec.reviews)
         # 门禁看的是记录本身；开发确认是另一件事，放行但没确认时必须把人拉进来
         need_human = rev_status != "approved"

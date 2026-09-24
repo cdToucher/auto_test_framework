@@ -52,6 +52,7 @@ atk review-draft <草稿.yaml> --by <人> --verdict approve|reject
 atk review --last --by <人> --verdict approve
 atk gate --last --format json
 atk approvals mint <草稿.yaml|--run <run_id>>   # 只能由人在交互式终端执行
+atk gate <run_id> --allow-unbound              # 明知故犯：判定一条未绑定基线的记录
 atk approvals list                              # 看审批账本与待核销凭证
 atk report --last                           # 渲染 HTML 报告
 ```
@@ -94,17 +95,26 @@ CI 只需 `test $? -le 1` 就能区分"业务不通过"与"没测成"。
   本次不测 UI 就显式 `atk run --skip-ui`（不登记待实测意图）。
 - 环境/账号问题记 `blocked`，不得记 `fail`。
 - 不得编造接口/字段；AI 草稿（tags 含 `ai-generated`）未经人工评审转正，gate 拦截。
-- **转正的判据是内容，不是标签**：`config/approvals.yaml` 里以断言面 sha256 为键的一条记录
-  才算已批准，而那条记录只能凭 `atk approvals mint <文件>` 在**交互式终端**里铸出的一次性
-  凭证写入。所以：删掉 `ai-generated` tag 不会转正；改一个断言就得重新审一次；改注释不会撤销
-  审批。你在非终端 shell 里跑 `mint` 会直接 exit 2 —— 这是设计，不是故障。
+- **转正的判据是内容，不是标签**：`config/approvals.yaml` 里以断言面 sha256 为键、
+  并带**有效签名**的一条记录才算已批准。签名密钥在仓库外（`~/.atk/approval.key`，
+  CI 用 `ATK_APPROVAL_KEY` 注入同一把），条目只能由 `atk approvals mint <文件>` 在
+  **交互式终端**里核销凭证后写入。所以：删掉 `ai-generated` tag 不会转正；
+  **手写一条 approvals.yaml 记录也不会转正**（没有效签名 = 不采信，gate 会明说
+  "账本里有 N 条签名无效的条目"）；改一个断言就得重审；改注释不会撤销审批；
+  没密钥时一律判未批。你在非终端 shell 里跑 `mint` 会 exit 2 —— 这是设计，不是故障。
   撞到 `未经人工审批` 时**停下来把命令原样转给开发者**去终端执行，不要试图绕过。
+- **记录必须绑定基线才能当合并依据**：`base_ref` 为空的记录（如 `run --record-new`
+  的产物）会被 `unbound_record` 拦下——它没描述"哪次变更被测过"。明知故犯用
+  `atk gate --allow-unbound`（放行会在 warnings 里留痕）。
 - 回填 status 无默认值，且 `pass` 必须带 `--note` 与**真实存在**的 `--evidence` 文件
   （缺文件 exit 2，无证据的 pass 不予登记）；实测是什么就记什么，不得把 blocked 写成 pass。
   `--from-json` 的 payload 必须自带 `run_id`，title 必须是本次运行登记过的意图
   （凭空补覆盖面要显式 `--allow-new-intent`）。
-- 不要手改 `reports/runs/<id>/run.yaml`：当前态与 `events.yaml` 事件流水会被 gate 交叉校验，
-  改过的记录按"结论不可信"拦截。
+- 不要手改 `reports/runs/<id>/run.yaml`：当前态与 `events.yaml` 会被 gate 交叉校验
+  （流水是 HMAC 链，逐条签名并链住上一条），改记录或改流水都会被判"结论不可信"。
+- 已知的残余缺口（诚实声明，未修）：新场景若**先被提交**、再以那次提交或其后的引用当
+  基线跑 plan，会被当成"早于基线存在"而享受沿袭豁免。锚定到受保护分支才能封掉，
+  见 tests/test_forgery_gates.py::test_committed_before_the_base_is_grandfathered。
 - 选中 0 个场景按受阻处理（exit 2），空跑不算通过。
 - **影响面算不清就多跑**：有未映射的代码变更、`modules.yaml` 缺失或不可解析、拿不到
   git 基线时，`plan` 自动改成 `selection.mode = full_suite`（跑全库），绝不返回空选择。

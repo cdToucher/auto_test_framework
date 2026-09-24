@@ -133,7 +133,10 @@ def test_ui_backfill_command_carries_the_run_id(proj):
 
 
 def test_report_and_gate_next_carry_the_run_id(proj):
-    rid = _json("run", "--record-new", "--format", "json")[1]["run_id"]
+    # 用 plan→run --record-to 而不是 run --record-new：后者产出的记录没绑定基线，
+    # 会被 gate 的 unbound_record 拦下（那正是它该被拦的情形）
+    rid = _json("plan", "--base", "HEAD~1", "--format", "json")[1]["run_id"]
+    assert _json("run", "--record-to", rid, "--format", "json")[0] == 0
     assert _json("report", rid, "--format", "json")[1]["next"] == [f"atk gate {rid} --format json"]
     assert _json("last", "--format", "json")[1]["next"] == [f"atk gate {rid} --format json"]
     _code, gate = _json("gate", rid, "--format", "json")

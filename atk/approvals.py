@@ -28,6 +28,8 @@ from typing import Any, Iterable, Optional
 
 from pydantic import BaseModel, Field
 
+from . import keystore
+
 AI_NAME_RE = re.compile(r"(?i)\b(ai|a\.i|bot|agent|llm|assistant|claude|qoder|copilot)\b")
 APPROVALS_FILE = "approvals.yaml"
 REVIEWERS_FILE = "reviewers.yaml"
@@ -44,6 +46,25 @@ class Approval(BaseModel):
     at: str = ""
     token: str = ""           # 凭证的 sha256，只作追溯，不作校验依据
     note: str = ""
+    sig: str = ""             # 仓库外密钥的 HMAC；没有效签名的条目一律不认
+
+
+def approval_payload(a: "Approval") -> str:
+    """参与签名的字段表示。note/at/by 全部入签：改任何一项都让签名作废。"""
+    return keystore.canonical([a.kind, a.target, a.key, a.by, a.at, a.note])
+
+
+def valid_approvals(path: Path | str) -> tuple[list["Approval"], list["Approval"]]:
+    """分成"签名有效"与"签名无效"两组。
+
+    无效的那组要能报出来：否则一条被手改过、或来自另一把密钥的记录只会让 gate
+    显示"从没人批过"，谁也不知道账本里其实写着批过——那是最难查的一类误导。
+    """
+    good: list[Approval] = []
+    bad: list[Approval] = []
+    for a in load_approvals(path):
+        (good if keystore.verify(approval_payload(a), a.sig) else bad).append(a)
+    return good, bad
 
 
 class Reviewers(BaseModel):
@@ -195,15 +216,17 @@ def write_approvals(path: Path | str, items: list[Approval]) -> None:
 
 def is_approved(*, target: Path | str, project: Path | str = ".",
                 key: Optional[str] = None) -> bool:
-    """这份断言面有没有被人认过。key 不给就现算。"""
+    """这份断言面有没有被**真人**认过——只认带有效签名的条目。
+
+    签名密钥在仓库外（见 atk/keystore.py），所以"往 approvals.yaml 里补一条"不再等于
+    批过了。没有密钥时全部视为未批：那说明从没人在终端铸过凭证。
+    """
     cur = key if key is not None else expect_hash(target)
     if not cur:
         return False
     rel = _rel(Path(target), Path(project))
-    for a in load_approvals(approvals_file(project)):
-        if a.key == cur and a.target in (rel, str(target)):
-            return True
-    return False
+    good, _bad = valid_approvals(approvals_file(project))
+    return any(a.key == cur and a.target in (rel, str(target)) for a in good)
 
 
 def exists_at_base(repo: Path | str, base_ref: str, path: Path | str) -> Optional[bool]:
@@ -405,6 +428,7 @@ def record_approval(*, target: str, key: str, by: str, note: str, token: str,
     approval = Approval(kind=kind, target=rel, key=key, by=by, note=note,
                         at=datetime.now().isoformat(timespec="seconds"),
                         token=_sha(token) if token else "")
+    approval.sig = keystore.sign(approval_payload(approval))
     items = [a for a in items if not (a.kind == kind and a.target == rel and a.key == key)]
     items.append(approval)
     write_approvals(approvals_file(project), items)
