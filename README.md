@@ -2,9 +2,9 @@
 
 【此项目还是在沉淀和实践中，目的是使用本地AI或者非常便宜的API 自动化生成冒烟用例和做接口测试，结合AI 浏览器再做e2e 测试，生成测试报告，扩展开发角色责任边界 】
 
-即时层（变更驱动冒烟，不落库）+ 沉淀层（YAML 场景回归）。设计思路见 `docs/DESIGN.md`，
-原始规格见 `docs/superpowers/specs/`，角色规范见 `docs/roles.md`，
-人机协作全流程见 `docs/human-ai-workflow.html`。
+即时层（变更驱动冒烟，不落库）+ 沉淀层（YAML 场景回归）。使用说明（安装/接入/日常循环/排障）见
+`docs/human-ai-workflow.html`，命令手册见 `docs/USAGE.md`，原始规格见 `docs/superpowers/specs/`，
+角色规范见 `docs/roles.md`。
 
 核心思想：**AI 干量产的活（生成/实测/固化填充），人做判断的事（审断言、定性失败），机器守确定的门（gate）。**
 
@@ -185,7 +185,7 @@ steps:
 |---|---|---|
 | `examples/mock_server.py` | 8765 | 快速上手最小服务 |
 | `examples/demo_app.py` | 8766 | 待办任务：状态机/参数校验/页面，配套 `scenarios/demo_app/` |
-| `examples/spa_shop.py` | 8777 | 单页商城：API+UI 混合 dogfood，见 `docs/spa-shop-dogfood.html` |
+| `examples/spa_shop.py` | 8777 | 单页商城：API+UI 混合 dogfood |
 | `examples/shop_pro.py` | 8788 | **复杂演示**：鉴权、库存、购物车校验、五种优惠券规则（满减/折扣/门槛/过期/每人限用）、订单状态机、401/404/409/410/422 全错误面 + 页面 |
 
 `scenarios/shop_pro/` 按 `auth/ shop/ order/` 目录组织 13 张场景，覆盖 fixture 数据、
@@ -261,9 +261,10 @@ YAML 唯一事实源）；停机期间定时任务不补跑；`ui:` 步骤由 AI
 
 | 文档 | 内容 |
 |---|---|
-| `docs/human-ai-workflow.html` | **人机协作使用说明**：三条命令起步、gate 判定表、AI 操作细则 |
-| `docs/DESIGN.md` | 设计思路与权衡（为什么双层、为什么 YAML-first、为什么不做的清单） |
-| `docs/roles.md` | 流程轨：角色与质量门禁规范（suspect 24h SLA 等） |
+| `docs/human-ai-workflow.html` | **人机协作使用说明**：uv 安装、三步接入、日常循环、门禁与硬规则、排障 |
+| `docs/USAGE.md` | 命令手册：完整参数、CI 样例、控制台 API |
+| `docs/QUICKSTART_SCENARIOS.md` | 场景写法快速上手（YAML 字段、expect DSL、fixtures） |
 | `docs/AI_AUTHORING_PROTOCOL.md` | AI 起草场景协议（skill 正文的文档版） |
-| `docs/USAGE.md` / `docs/QUICKSTART_SCENARIOS.md` | 命令手册 / 场景快速上手 |
-| `docs/superpowers/` | 原始规格（specs）与各里程碑实施计划（plans） |
+| `docs/roles.md` | 流程轨：角色与质量门禁规范（suspect 24h SLA 等） |
+| `docs/superpowers/specs/` | 原始设计规格（字段/接口/退出码；以 `atk --help` 实际命令为准） |
+| `docs/PUBLISH.md` | 发布路线（pip 发包 → npm 元包评估） |
