@@ -34,3 +34,22 @@ def test_record_new_creates_entry(tmp_path: Path):
     assert pointer.is_file(), "--last 指针应落在 --project 指定的目录里"
     after = repo_pointer.read_text(encoding="utf-8") if repo_pointer.exists() else None
     assert after == before, "不该污染仓库工作区的 --last 指针"
+
+
+def test_record_new_says_it_is_not_a_gate_basis(tmp_path: Path):
+    """--record-new 的记录没绑基线，必须在输出里说清"不能作合并门禁依据"。
+
+    console 运行按钮与定时任务走的都是这条路径（routes.py 起 `run --record-new`）。
+    不提示的话，用户看到的是绿勾加 HTML 报告，以为能当门禁用；回头 atk gate
+    以 _unbound_record 拦下，还得回头查为什么。
+    """
+    r = runner.invoke(app, [
+        "run", "--env", "local", "--record-new",
+        "--project", str(tmp_path),
+        "--runs-dir", str(tmp_path / "runs"),
+        "--report-dir", str(tmp_path / "reports"),
+        "--root", str(REPO / "scenarios" / "demo"),
+        "--env-file", str(REPO / "config" / "environments.yaml"),
+    ])
+    assert r.exit_code in (0, 1, 2), r.output
+    assert "未绑定" in r.output and "门禁" in r.output

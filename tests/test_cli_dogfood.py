@@ -8,6 +8,7 @@ import json
 import socket
 import threading
 import time
+from pathlib import Path
 
 import pytest
 import uvicorn
@@ -20,6 +21,33 @@ from atk.console import create_app
 cli = CliRunner()
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _real_project_untouched():
+    """哨兵：本模块的自举用例跑完后，真实仓库的运行状态必须一个字节都没动。
+
+    自举的意义是"拿 atk 自己的场景库测 atk"，不是"拿开发者的工作区当草稿纸"。
+    已实证的污染：跑一遍套件，`.atk/last-run.json` 被指向一条测试造的记录，
+    该记录 base_ref 为空——开发者随后敲 atk gate 必被 _unbound_record 拦，
+    atk agent 报 gate_blocking 且 next 指向自己（死环）。
+    """
+    repo = Path(__file__).resolve().parents[1]
+    watched_files = [repo / ".atk" / "last-run.json", repo / ".atk" / "deps.yaml"]
+    watched_dirs = [repo / "reports" / "runs", repo / "scenarios"]
+
+    def snap():
+        return (
+            [p.read_bytes() for p in watched_files],
+            [sorted(str(q.relative_to(d)) for q in d.rglob("*")) for d in watched_dirs],
+        )
+
+    before = snap()
+    yield
+    after = snap()
+    assert before == after, (
+        "自举用例改动了真实仓库状态（.atk/last-run.json / .atk/deps.yaml / "
+        "reports/runs / scenarios 之一变了）：自举必须跑在隔离的临时项目里")
+
+
 def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -27,11 +55,30 @@ def _free_port() -> int:
 
 
 @pytest.fixture
-def console(monkeypatch):
-    """真起一个 uvicorn（127.0.0.1 随机端口），等 /api/health 通了再交给我。"""
+def dogfood_project(tmp_path, monkeypatch):
+    """隔离的临时项目：场景库与环境配置从真实仓库拷来，之后全程在 tmp 里跑。
+
+    自举要测的是"atk 跑真实的场景文件"，不是"atk 改写开发者的工作区"：
+    last-run 指针、reports/runs、.atk/deps.yaml 一旦落进真实仓库，开发者
+    随后敲的 atk last / atk gate / atk agent 读到的就是测试留下的残骸。
+    """
+    import shutil
+
+    repo = Path(__file__).resolve().parents[1]
+    shutil.copytree(repo / "scenarios", tmp_path / "scenarios")
+    (tmp_path / "config").mkdir()
+    shutil.copy2(repo / "config" / "environments.yaml",
+                 tmp_path / "config" / "environments.yaml")
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+@pytest.fixture
+def console(dogfood_project, monkeypatch):
+    """真起一个 uvicorn（127.0.0.1 随机端口，服务根指向隔离项目），等 /api/health 通了再交给我。"""
     from pathlib import Path
 
-    root = Path(__file__).resolve().parents[1]
+    root = dogfood_project
     port = _free_port()
     server_app = create_app(project_root=root)
     config = uvicorn.Config(server_app, host="127.0.0.1", port=port, log_level="warning")
@@ -87,11 +134,11 @@ def test_console_reports_the_run_it_just_observed(console):
     assert rid in ids, f"刚跑的记录没出现在控制台历史里：{rid} not in {ids}"
 
 
-def test_a_broken_scenario_is_visible_as_a_failure_not_a_crash(console, tmp_path, monkeypatch):
+def test_a_broken_scenario_is_visible_as_a_failure_not_a_crash(console, dogfood_project, monkeypatch):
     """写坏断言时必须是"用例失败 exit 1"，而不是把执行器打崩。"""
     from pathlib import Path
 
-    bad = Path(layout.scenarios_dir(Path(__file__).resolve().parents[1])) / "atk_self" / "_tmp_bad.yaml"
+    bad = Path(layout.scenarios_dir(dogfood_project)) / "atk_self" / "_tmp_bad.yaml"
     bad.write_text(
         "scenario: 自举-故意断错\nmodule: atkself\npriority: P0\nenv: atkself\n"
         'steps:\n  - api:\n      call: "GET /api/health"\n'

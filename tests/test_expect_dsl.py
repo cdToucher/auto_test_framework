@@ -58,6 +58,26 @@ def test_parse_expect_value(raw, op, value):
     assert parse_expect_value(raw) == (op, value)
 
 
+def test_operator_typo_raises_instead_of_silent_literal():
+    """拼错的操作符必须报错：按字面量 eq 处理时，断言永远不失败也永远不生效。
+
+    那是全库最坏的一种假绿——报告显示"5 条断言通过"，实际一条都没验。
+    离已知操作符足够近的单词（如 contain/startwith）判为拼写错误并给出建议；
+    与任何操作符都不像的（https、12:30）仍是合法字面量。
+    """
+    with pytest.raises(ValueError, match="contains"):
+        parse_expect_value("contain: 成功")
+    with pytest.raises(ValueError, match="startswith"):
+        parse_expect_value("startwith: NO")
+    # 显式规范名也可以走关键字形式
+    assert parse_expect_value("eq: done") == ("eq", "done")
+
+
+def test_unrelated_colon_string_stays_literal():
+    assert parse_expect_value("https://example.com") == ("eq", "https://example.com")
+    assert parse_expect_value("note: 12:30") == ("eq", "note: 12:30")
+
+
 def test_parse_expect_rejects_bad_shape():
     with pytest.raises(ValueError):
         parse_expect("not-a-map")

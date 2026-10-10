@@ -21,7 +21,6 @@ import re
 import secrets
 import subprocess
 import sys
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -229,68 +228,18 @@ def is_approved(*, target: Path | str, project: Path | str = ".",
     return any(a.key == cur and a.target in (rel, str(target)) for a in good)
 
 
-def exists_at_base(repo: Path | str, base_ref: str, path: Path | str) -> Optional[bool]:
-    """该文件在基线引用处是否已存在。git 不可用/引用解析不了返回 None（未知，别当不存在）。
-
-    有了它，"沿袭豁免"才等于"在这次改动之前就在库里"，而不是"恰好被提交过"——
-    后者 AI 自己就能制造（先 commit 新场景，再以 HEAD~1 为基线跑 plan）。
-    """
-    if not base_ref:
-        return None
-    p = Path(str(path))
-    if p.is_absolute():
-        # 只做 relative_to，不用 relpath：relpath 会拿当前工作目录去补全，
-        # 在"cwd 不在仓库里"的场合会算出一个仓库外的键，把"不存在"错判成"未知"。
-        try:
-            rel = p.resolve().relative_to(Path(str(repo)).resolve()).as_posix()
-        except (ValueError, OSError):
-            return None
-    else:
-        rel = p.as_posix()
-    # 先确认基线本身解析得出来。可解析时 cat-file 的非零退出就一律是"该路径不在
-    # 这个引用里"——不去匹配 git 的报错措辞，那些文案历史上已经变过好几次。
-    try:
-        probe = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet",
-                                f"{base_ref}^{{commit}}"], capture_output=True, text=True)
-        if probe.returncode != 0:
-            return None
-        proc = subprocess.run(
-            ["git", "-C", str(repo), "cat-file", "-e", f"{base_ref}:{rel}"],
-            capture_output=True, text=True)
-    except OSError:
-        return None
-    return proc.returncode == 0
-
-
 def needs_approval(*, target: Path | str, project: Path | str = ".",
-                   touched: Iterable[str] = (),
-                   repo: Optional[Path | str] = None,
-                   base_ref: str = "",
-                   at_base: Optional[bool] = None) -> tuple[bool, str]:
-    """本次是否需要一条审批记录。
+                   touched: Iterable[str] = ()) -> tuple[bool, str]:
+    """这份断言面有没有被**真人**认过。没批过就需要审批，没有例外。
 
-    三种情形必须审批：本次变更集碰过它（含未提交的新文件）、它在基线之后才出现、
-    或基线存在性未知。都不满足才走沿袭豁免。
-
-    touched 传空集**不**当成"什么都没碰"——所以判据里"基线之后新增"是独立一条，
-    避免"忘了传 touched"退化成"全部豁免"。
+    沿袭豁免（"早于基线存在就不用批"）已删除：它留下的洞是 AI 把新场景先
+    commit、再以那次提交当基线跑 plan，未经任何人审的断言面直接过门禁。
+    存量场景的一次性迁移通道是 `atk approvals mint --grandfather`（交互式
+    终端、一次确认、逐份写签名审批），不是永远开一个"不批也能过"的口子。
     """
-    rel = _rel(Path(target), Path(project))
-    touched_set = {str(t).lstrip("./") for t in touched}
-    cur = expect_hash(target)
-    if is_approved(target=target, project=project, key=cur):
+    if is_approved(target=target, project=project):
         return (False, "已批准")
-    if at_base is None and repo is not None and base_ref:
-        at_base = exists_at_base(repo, base_ref, rel)
-    if rel in touched_set or str(target) in touched_set:
-        if not cur:
-            return (True, "场景文件读不到或无步骤，无法确定断言面")
-        return (True, "本次变更碰过该场景，断言面尚无人批准")
-    if at_base is False:
-        return (True, "该场景在基线之后才出现（新写），尚无人批准")
-    if at_base is None and base_ref:
-        return (True, "无法确认该场景是否早于基线存在，按未批准处理")
-    return (False, "未在本次变更集中且早于基线存在（沿袭）")
+    return (True, "该场景的断言面尚无人批准")
 
 
 
@@ -351,6 +300,43 @@ def _sha(v: str) -> str:
 
 def _tid(token: str) -> str:
     return _sha(token)[:16]
+
+
+def grandfather(*, targets: list[tuple[str, str]], by: str, note: str = "",
+                project: Path | str = ".") -> list[Approval]:
+    """存量场景一次性批量转正：交互式终端里一次确认，逐份写入签名审批。
+
+    沿袭豁免删除后，历史场景在下次 gate 前必须批过一次；对几十条存量场景，
+    逐份 mint + review-draft 是不现实的，所以有这条一次性通道。它并不比单份
+    审批弱：同样要求 human_present()（stdin 与 stdout 都是 TTY），AI/CI 驱动
+    的 shell 一律 exit 2。确认前会把每份文件的断言面指纹列全，供人逐条核对。
+
+    targets 是 [(相对路径, 断言面指纹)]；返回写入的条目。
+    """
+    if not human_present():
+        raise RuntimeError(
+            "批量转正必须在交互式终端里执行：非 TTY 环境（AI/CI 驱动的 shell）一律拒绝。"
+            "请开发者本人在终端执行 atk approvals mint --grandfather。")
+    import typer
+
+    typer.echo(f"\n待转正存量场景 {len(targets)} 份：")
+    for rel, key in targets:
+        typer.echo(f"  - {rel}  {key[:18]}…")
+    if not typer.confirm("以上断言面你已逐条看过并认可？"):
+        raise RuntimeError("已取消：未确认则不写入任何审批")
+    items = load_approvals(approvals_file(project))
+    now = datetime.now().isoformat(timespec="seconds")
+    written: list[Approval] = []
+    for rel, key in targets:
+        a = Approval(kind="scenario", target=rel, key=key, by=by,
+                     note=note or "存量场景一次性批量转正", at=now, token="")
+        a.sig = keystore.sign(approval_payload(a))
+        items = [x for x in items
+                 if not (x.kind == a.kind and x.target == a.target and x.key == a.key)]
+        items.append(a)
+        written.append(a)
+    write_approvals(approvals_file(project), items)
+    return written
 
 
 def mint(*, target: str, key: str, project: Path | str = ".",

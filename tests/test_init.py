@@ -30,6 +30,37 @@ def test_init_creates_scaffold(tmp_path, monkeypatch):
     assert v.exit_code == 0, v.output
 
 
+def test_init_gitignore_keeps_approvals_ledger_committable(tmp_path, monkeypatch):
+    """生成的 .gitignore 不能把审批账本挡在版本管理外。
+
+    CI 的 gate 要验签（approvals 账本 + ATK_APPROVAL_KEY），账本又落在 .atk/ 下；
+    若谁用 .atk/ 一刀切忽略（本仓库自己的旧 .gitignore 就是这么写的），新场景在
+    CI 里永远"未经人工审批"且 CI 无法 mint（要交互式终端）——门禁必红且无解。
+    init 生成的忽略清单必须点名：账本要提交。
+    """
+    monkeypatch.chdir(tmp_path)
+    r = CliRunner().invoke(app, ["init"])
+    assert r.exit_code == 0, r.output
+    text = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+    assert "approvals.yaml" in text, "应显式说明审批账本要提交"
+    ignored = [ln.strip() for ln in text.splitlines()
+               if ln.strip() and not ln.strip().startswith("#")]
+    assert ".atk/" not in ignored and ".atk/approvals.yaml" not in ignored
+
+
+def test_init_gitignore_ignores_console_state_files(tmp_path, monkeypatch):
+    """console -d 的运行时状态（.atk/console-<端口>.{json,log}）必须被忽略。
+
+    这两个文件是进程生命周期产物（daemon.py 写在 <root>/.atk/ 下），不进忽略清单
+    的话，起一次控制台就在 git status 里留两份未跟踪文件——本地单人最烦这个。
+    """
+    monkeypatch.chdir(tmp_path)
+    r = CliRunner().invoke(app, ["init"])
+    assert r.exit_code == 0, r.output
+    text = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+    assert ".atk/console-*.json" in text and ".atk/console-*.log" in text
+
+
 def test_init_never_overwrites(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     cfg = tmp_path / "config"

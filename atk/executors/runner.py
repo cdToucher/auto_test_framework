@@ -33,7 +33,6 @@ class ScenarioResult:
     duration_ms: int = 0
     env: str = ""
 
-
 @dataclass
 class RunReport:
     """一次 run 的汇总。
@@ -41,11 +40,15 @@ class RunReport:
     计数一律委托 policy.tally：这里只是执行期的便捷出口，不再是口径的定义处。
     CLI / JSON / HTML / junit / gate 读的是同一张 TIER 表。
     """
+
     env_name: str = ""
     started_at: str = ""
     results: list[ScenarioResult] = field(default_factory=list)
     load_errors: list[str] = field(default_factory=list)
     env_warnings: list[str] = field(default_factory=list)
+    #: --skip-ui 丢掉的纯 UI 场景数。它们不进 results（不计入结论），
+    #: 但要能被看见：否则"通过 0/3（跳过 3）"这种绿条没人发现其实什么都没测。
+    ui_skipped: int = 0
 
     @property
     def _tally(self) -> Tally:
@@ -143,9 +146,32 @@ class Runner:
                     envs[name] = env
                     if env.missing_env:
                         report.env_warnings.append(
-                            f"环境 '{name}' 的 ${{env:VAR}} 引用的环境变量未设置（按空串解析）: "
+                            f"环境 '{name}' 的 ${{env:VAR}} 引用的环境变量未设置: "
                             + ", ".join(env.missing_env)
+                            + "（涉及该环境的场景按受阻处理，不发送请求）"
                         )
+                if env.missing_env:
+                    # env.py 的契约：missing_env 要在发请求前拦住，不能静默按空串发出去。
+                    # 空凭据打到服务端只会在下一步拿到 401，被归类成断言失败（exit 1，
+                    # 看着像产品回归），而它是"没测成"（受阻，exit 2）。
+                    blocked = ScenarioResult(
+                        scenario=sc,
+                        passed=False,
+                        error_class="environment",
+                        steps=[StepResult(
+                            title=f"env:{name}",
+                            passed=False,
+                            detail=(f"环境 '{name}' 的环境变量未设置: "
+                                    + ", ".join(env.missing_env)
+                                    + "（配好后重跑；未发送请求）"),
+                            error_class="environment",
+                        )],
+                    )
+                    blocked.env = name
+                    report.results.append(blocked)
+                    if on_result:
+                        on_result(blocked)
+                    continue
                 client = clients.get(name)
                 if client is None:
                     client = httpx.Client(
@@ -206,6 +232,10 @@ class Runner:
                     variables.update(extra_vars)
                 t0 = time.perf_counter()
                 result = self._run_one(ApiExecutor(client, variables), sc, skip_ui)
+                if result is None:
+                    # 纯 UI 场景 + --skip-ui：不计入结论，只计数备查
+                    report.ui_skipped += 1
+                    continue
                 result.duration_ms = int((time.perf_counter() - t0) * 1000)
                 result.env = name
                 report.results.append(result)
@@ -219,11 +249,18 @@ class Runner:
     @staticmethod
     def _run_one(
         executor: ApiExecutor, sc: Scenario, skip_ui: bool = False
-    ) -> ScenarioResult:
+    ) -> ScenarioResult | None:
+        """执行单个场景；纯 UI 场景遇 --skip-ui 返回 None（不计入结论）。
+
+        --skip-ui 的语义是"这轮不测 UI"：场景里只剩 UI 步骤时，它什么都没验，
+        留着一条 skipped 记录会让"通过 0/N（跳过 N）"看起来像一次通过的运行。
+        """
         steps: list[StepResult] = []
         error_class = "none"
         if not sc.steps:
             return ScenarioResult(scenario=sc, passed=False, error_class="skipped")
+        if skip_ui and not any(isinstance(st, ApiStep) for st in sc.steps):
+            return None
         for st in sc.steps:
             if isinstance(st, ApiStep):
                 sr = executor.execute(st)

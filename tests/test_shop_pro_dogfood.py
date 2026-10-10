@@ -29,7 +29,7 @@ def shop_base_url():
 
 
 @pytest.fixture
-def shop_project(tmp_path, shop_base_url):
+def shop_project(tmp_path, shop_base_url, approve_library):
     """把 scenarios/shop_pro 装进一个带 git 基线的独立工程（模拟真实项目接入）。"""
     cfg = tmp_path / "config"
     cfg.mkdir()
@@ -60,8 +60,11 @@ def shop_project(tmp_path, shop_base_url):
     return tmp_path
 
 
-def test_full_smoke_record_gate(shop_project, tmp_path, monkeypatch):
+def test_full_smoke_record_gate(shop_project, tmp_path, monkeypatch, approve_library):
     monkeypatch.chdir(shop_project)
+    # 沿袭豁免已删除：gate 要求记录里每个场景都有签名审批。这条端到端用例
+    # 验的是 smoke→record→gate 全链路，存量场景按新契约一次性批掉。
+    approve_library(shop_project)
 
     # 1) 一键冒烟：API 场景应全过；UI 场景登记为待实测意图 -> gate 拦截
     sm = runner.invoke(

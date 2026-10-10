@@ -62,8 +62,52 @@ def _assert_todo_three_lines(output, run_id):
     assert run_id in output
 
 
-def test_smoke_green_path_run_id_parseable(tmp_path, mock_base_url, monkeypatch):
+def test_smoke_dry_run_only_lists_and_never_executes(tmp_path, mock_base_url,
+                                                     monkeypatch, approve_library):
+    """--dry-run 只列会跑什么：不建运行记录、不发请求、不碰 gate。
+
+    smoke 与 run 一样需要"先看清会跑什么再真跑"；此前 smoke 只有真跑一条路，
+    想看选中了什么得先跑一遍（顺带建一条记录）。
+    """
+    repo = _make_multi_repo(tmp_path / "dry", mock_base_url)
+    approve_library(repo)
+    monkeypatch.chdir(repo)
+    r = CliRunner().invoke(app, ["smoke", "--base", "HEAD", "--head", "HEAD",
+                                 "--dry-run", "--format", "json"])
+    assert r.exit_code == 0, r.output
+    payload = json.loads(r.stdout)
+    assert payload["dry_run"] is True
+    assert payload["run_id"] is None, "预演不应创建运行记录"
+    selected = [s["scenario"] for s in payload["selected"]]
+    assert selected, payload
+    assert not (repo / "reports" / "runs").exists() or not any(
+        (repo / "reports" / "runs").iterdir())
+
+
+def test_smoke_module_scopes_execution(tmp_path, mock_base_url, monkeypatch,
+                                       approve_library):
+    """--module 只跑指定模块：smoke 与 run 的过滤口径一致。
+
+    多模块库里只关心一个模块时，此前只能整库跑或自己挑 tags。
+    """
+    repo = _make_multi_repo(tmp_path / "mod", mock_base_url)
+    approve_library(repo)
+    monkeypatch.chdir(repo)
+    r = CliRunner().invoke(app, ["smoke", "--base", "HEAD", "--head", "HEAD",
+                                 "--env", "local", "--module", "demo", "--format", "json"])
+    assert r.exit_code == 0, r.output
+    payload = json.loads(r.stdout)
+    assert payload["scenarios"]["total"] == 1, payload["scenarios"]
+    from atk.run_store import load_run
+
+    rec = load_run(payload["run_id"], runs_dir=repo / "reports" / "runs")
+    assert [s.name for s in rec.scenarios] == ["demo-冒烟"], rec.scenarios
+    # 计划与执行一致，否则 gate 的 deps_stale 会拦"计划了没跑"
+    assert sorted(rec.planned_scenarios) == sorted(s.file for s in rec.scenarios)
+def test_smoke_green_path_run_id_parseable(tmp_path, mock_base_url, monkeypatch,
+                                            approve_library):
     repo = _make_repo(tmp_path / "ok", SCENARIO_OK)
+    approve_library(repo)
     monkeypatch.chdir(repo)
     _write_env(repo, mock_base_url)
     r = CliRunner().invoke(
@@ -131,13 +175,15 @@ def _make_multi_repo(base, mock_base_url):
     return base
 
 
-def test_smoke_selection_is_conservative_once_then_scoped(tmp_path, mock_base_url, monkeypatch):
+def test_smoke_selection_is_conservative_once_then_scoped(tmp_path, mock_base_url, monkeypatch,
+                                                     approve_library):
     """无观测条目的场景先跑一次（testmon 兜底），建立账本后才按影响面子集排除。
 
     两条都要测：只测"排除"会放过一个静默漏测的洞——从没跑过的场景没有任何证据
     说明它与本次改动无关。
     """
     repo = _make_multi_repo(tmp_path / "multi", mock_base_url)
+    approve_library(repo)
     monkeypatch.chdir(repo)
     d = repo / "src" / "demo"
     d.mkdir(parents=True)
@@ -177,9 +223,11 @@ def test_smoke_selection_is_conservative_once_then_scoped(tmp_path, mock_base_ur
     _assert_todo_three_lines(r2.output, run_id)
 
 
-def test_smoke_never_selects_zero_when_map_is_missing(tmp_path, mock_base_url, monkeypatch):
+def test_smoke_never_selects_zero_when_map_is_missing(tmp_path, mock_base_url, monkeypatch,
+                                                     approve_library):
     """映射表被删 = 影响面算不清 = 跑全库，绝不能"选 0 个然后按通过算"。"""
     repo = _make_multi_repo(tmp_path / "nomap", mock_base_url)
+    approve_library(repo)
     (repo / "config" / "modules.yaml").unlink()
     _git("add", "-A", cwd=repo)
     _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "drop map", cwd=repo)
@@ -243,8 +291,9 @@ def _make_tag_priority_repo(base, mock_base_url):
     return base
 
 
-def test_smoke_tags_passthrough(tmp_path, mock_base_url, monkeypatch):
+def test_smoke_tags_passthrough(tmp_path, mock_base_url, monkeypatch, approve_library):
     repo = _make_tag_priority_repo(tmp_path / "tags", mock_base_url)
+    approve_library(repo)
     monkeypatch.chdir(repo)
     r = CliRunner().invoke(
         app, ["smoke", "--base", "HEAD~1", "--head", "HEAD", "--env", "local",
@@ -260,8 +309,9 @@ def test_smoke_tags_passthrough(tmp_path, mock_base_url, monkeypatch):
     assert "标签B" not in r.output
 
 
-def test_smoke_priority_passthrough(tmp_path, mock_base_url, monkeypatch):
+def test_smoke_priority_passthrough(tmp_path, mock_base_url, monkeypatch, approve_library):
     repo = _make_tag_priority_repo(tmp_path / "prio", mock_base_url)
+    approve_library(repo)
     monkeypatch.chdir(repo)
     r = CliRunner().invoke(
         app, ["smoke", "--base", "HEAD~1", "--head", "HEAD", "--env", "local",
@@ -276,8 +326,10 @@ def test_smoke_priority_passthrough(tmp_path, mock_base_url, monkeypatch):
     assert names == ["标签A"], names
 
 
-def test_smoke_no_module_hit_runs_all_and_notes(tmp_path, mock_base_url, monkeypatch):
+def test_smoke_no_module_hit_runs_all_and_notes(tmp_path, mock_base_url, monkeypatch,
+                                              approve_library):
     repo = _make_repo(tmp_path / "nomod", SCENARIO_OK)
+    approve_library(repo)
     monkeypatch.chdir(repo)
     _write_env(repo, mock_base_url)
     # 改动落在模块映射之外，affected 为空
@@ -297,9 +349,11 @@ def test_smoke_no_module_hit_runs_all_and_notes(tmp_path, mock_base_url, monkeyp
     _assert_todo_three_lines(r.output, run_id)
 
 
-def test_smoke_plan_run_reuse_consistent_single_record(tmp_path, mock_base_url, monkeypatch):
+def test_smoke_plan_run_reuse_consistent_single_record(tmp_path, mock_base_url, monkeypatch,
+                                                    approve_library):
     """行为断言替代源码字符串检查：复用清单与执行结果一致，且只建一条记录。"""
     repo = _make_repo(tmp_path / "reuse", SCENARIO_OK)
+    approve_library(repo)
     monkeypatch.chdir(repo)
     _write_env(repo, mock_base_url)
     runs_dir = repo / "reports" / "runs"

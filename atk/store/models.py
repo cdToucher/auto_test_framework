@@ -1,4 +1,5 @@
 """场景数据模型：YAML 结构的强类型表达。"""
+import difflib
 import math
 import re
 from enum import Enum
@@ -43,6 +44,11 @@ ALL_OPS: frozenset[str] = frozenset(
 
 _SYM_RE = re.compile(r"^\s*(<=|>=|!=|==|<|>)\s*(.*)$", re.S)
 _KW_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$", re.S)
+
+#: 可以写成 "操作符: 值" 形式的全部操作符（关键字式 + 规范名）
+_KEYWORD_FORM_OPS: tuple[str, ...] = tuple(
+    dict.fromkeys(OP_KEYWORDS + ("eq", "ne", "lt", "lte", "gt", "gte"))
+)
 
 
 def _coerce_scalar(s: str) -> Any:
@@ -107,7 +113,12 @@ def parse_expect_value(v: Any) -> tuple[str, Any]:
         "< 90"          -> ("lt", "90")
         "contains: 成功" -> ("contains", "成功")
         "len: 1..5"     -> ("len", {"min": 1, "max": 5})
+        "eq: done"      -> ("eq", "done")          规范名也走关键字形式
         "\\<literal"    -> ("eq", "<literal")   以反斜杠开头转义为字面量
+
+    拼错的操作符（"contain: x"、"startwith: x"）显式报错并给出建议：按字面量
+    eq 处理时断言永远不失败也永远不生效，是全库最坏的一种假绿。与任何操作符
+    都不像的 "词: 值"（https://…、note: 12:30）仍是合法字面量。
     """
     if not isinstance(v, str):
         return "eq", v
@@ -120,13 +131,21 @@ def parse_expect_value(v: Any) -> tuple[str, Any]:
     if m:
         return OP_SYMBOLS[m.group(1)], m.group(2).strip()
     m = _KW_RE.match(v)
-    if m and m.group(1) in OP_KEYWORDS:
-        op, rest = m.group(1), m.group(2).strip()
-        if op in ("in", "not_in"):
-            return op, _parse_in_list(rest)
-        if op == "len":
-            return op, _parse_len(rest)
-        return op, rest
+    if m:
+        word = m.group(1)
+        if word in _KEYWORD_FORM_OPS:
+            op, rest = word, m.group(2).strip()
+            if op in ("in", "not_in"):
+                return op, _parse_in_list(rest)
+            if op == "len":
+                return op, _parse_len(rest)
+            return op, rest
+        near = difflib.get_close_matches(word, _KEYWORD_FORM_OPS, n=1, cutoff=0.8)
+        if near:
+            raise ValueError(
+                f"未知断言操作符 {word!r}（是不是想写 {near[0]!r}？）；"
+                f"可用：{', '.join(sorted(ALL_OPS))}；按字面量比较请写成 '\\{word}: …'"
+            )
     return "eq", v
 
 

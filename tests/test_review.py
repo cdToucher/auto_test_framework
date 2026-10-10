@@ -14,7 +14,7 @@ def _git(*args, cwd):
 
 
 @pytest.fixture
-def repo(tmp_path, monkeypatch):
+def repo(tmp_path, monkeypatch, approve_library):
     _git("init", "-q", cwd=tmp_path)
     (tmp_path / "scenarios").mkdir()
     (tmp_path / "scenarios/s.yaml").write_text(SCEN, encoding="utf-8")
@@ -25,6 +25,9 @@ def repo(tmp_path, monkeypatch):
     (d / "logic.py").write_text("x=1")
     _git("add", ".", cwd=tmp_path)
     _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "change demo", cwd=tmp_path)
+    # 门禁要求记录里每个场景都有签名审批（沿袭豁免已删）：存量一次性批掉，
+    # 这组用例测的是 review/gate 的告警语义，不是审批。
+    approve_library(tmp_path)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
@@ -50,6 +53,21 @@ def _make_run(repo):
     )
     save_run(rec, runs_dir=repo / "reports" / "runs")
     return rec
+
+
+def test_review_has_no_approval_option(repo, human_approval):
+    """atk review 不再收 --approval：那套凭证对门禁零影响，只是纯仪式。
+
+    run 级审批条目的 target 是 `run:<id>`、key 是空串，而 is_approved 只匹配
+    场景断言面指纹——永远匹配不上；gate 的整单确认读的是 rec.reviews，根本不看
+    账本。代价却是两次 mint 加两次手抄一次性码。这里铸一枚**真**凭证：
+    拆掉选项之前它能走通整条流程（exit 0），砍掉之后同样输入必须直接退出。
+    """
+    rec = _make_run(repo)
+    token = human_approval(f"run:{rec.run_id}", "")
+    r = CliRunner().invoke(app, ["review", rec.run_id, "--by", "dev1",
+                                 "--verdict", "approve", "--approval", token])
+    assert r.exit_code == 2, r.output
 
 
 def test_review_approve_persists(repo):

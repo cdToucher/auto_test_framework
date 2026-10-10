@@ -75,7 +75,26 @@ def test_invalid_call_format_is_config_error(mock_client):
         assert not r.passed and r.error_class == "config"
 
 
-def test_non_json_response_capture_warns_not_crashes(mock_client):
+def test_capture_miss_fails_the_step_not_the_next_one(mock_client):
+    """capture 没命中必须当步失败。
+
+    旧实现只把"未命中路径"写进 detail 的警告里、步骤照过：真正的报错要到下一步
+    "变量未解析"才出现——失败点与原因点隔了一步，报告上看起来像下一步的错。
+    """
+    ex = ApiExecutor(mock_client, {})
+    r = ex.execute(
+        ApiStep(
+            call="GET /ping",
+            expect=[],
+            capture={"x": "nope.deep"},
+        )
+    )
+    assert not r.passed
+    assert "capture" in r.detail and "nope.deep" in r.detail
+
+
+def test_non_json_response_with_capture_fails_the_step(mock_client):
+    """声明了 capture 却拿到非 JSON：同样当步失败，不再只是警告。"""
     ex = ApiExecutor(mock_client, {"token": "tok_demo123"})
     r = ex.execute(
         ApiStep(
@@ -84,7 +103,15 @@ def test_non_json_response_capture_warns_not_crashes(mock_client):
             capture={"x": "data.y"},
         )
     )
-    assert r.passed and "响应非 JSON" in r.detail and "capture" in r.detail
+    assert not r.passed
+    assert "capture" in r.detail
+
+
+def test_non_json_response_without_capture_is_fine(mock_client):
+    """没声明 capture 时，响应是不是 JSON 与断言无关，不警告也不失败。"""
+    ex = ApiExecutor(mock_client, {})
+    r = ex.execute(ApiStep(call="GET /api/text", expect=[]))
+    assert r.passed and r.detail == "200"
 
 
 def test_environment_error_retries_then_passes():

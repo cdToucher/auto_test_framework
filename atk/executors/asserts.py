@@ -91,7 +91,13 @@ def _length_bound(v: Any) -> int | None:
 
 
 def _eq(a: Any, b: Any) -> bool:
-    """相等判定：先直接比，再退化为数值比（兼容 "00123" vs 123）。"""
+    """相等判定：先直接比，再退化为数值比（兼容 "00123" vs 123）。
+
+    bool 与数值永远不相等：`True == 1` 是 Python 的巧合，业务断言里布尔标志与
+    数值 1 是两回事（`paid: true` 与 `paid: 1` 混在一套接口里并不罕见）。
+    """
+    if isinstance(a, bool) != isinstance(b, bool):
+        return False
     if a == b:
         return True
     na, nb = _num(a), _num(b)
@@ -112,7 +118,9 @@ def compare(op: str, actual: Any, expected: Any) -> tuple[bool, str]:
         ok = actual is not MISSING and actual not in (None, "")
         return ok, "" if ok else "为空或缺失"
     if op == "is_null":
-        ok = actual is MISSING or actual is None
+        # 空串是"没有值"的第三种形态：not_null 不认它，is_null 就必须认——
+        # 否则用户想断"字段为空串"时两条路都是死胡同。
+        ok = actual is MISSING or actual is None or actual == ""
         return ok, "" if ok else f"应为 null，实际 {actual!r}"
     if actual is MISSING:
         return False, "字段缺失"

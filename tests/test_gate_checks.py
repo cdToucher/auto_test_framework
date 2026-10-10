@@ -4,6 +4,7 @@
 没人管。检查表化之后，每一行都能被单独钉住。
 """
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,12 @@ import pytest
 from atk import policy
 from atk.drafts import DRAFT_TAG
 from atk.run_store import IntentRecord, RunRecord, ScenarioSummary, StepSummary
+
+#: 默认上下文指向的隔离目录：不是 git 仓库、没有 deps 账本。
+#: 曾经默认 Path(".")——跑测试的进程恰好待在 atk 自己的仓库里，于是
+#: _unbound_record 看到"是 git 仓库"、_deps_stale 读到仓库真实的 .atk/deps.yaml，
+#: 用例结论随执行顺序与工作区状态漂移（单独跑与套件里跑能得出不同结果）。
+_ISOLATED = Path(tempfile.mkdtemp(prefix="atk-gate-checks-"))
 
 
 def _git(*a, cwd):
@@ -52,8 +59,8 @@ def _bad(name="s", cls="assertion", **kw) -> ScenarioSummary:
 
 def _ctx(rec, changed=("src/x.py",), dirty=(), **kw):
     return policy.GateContext(
-        rec=rec, repo=kw.pop("repo", Path(".")), head=kw.pop("head", "HEAD"),
-        runs_dir=kw.pop("runs_dir", Path(".")), root=kw.pop("root", Path(".")),
+        rec=rec, repo=kw.pop("repo", _ISOLATED), head=kw.pop("head", "HEAD"),
+        runs_dir=kw.pop("runs_dir", _ISOLATED), root=kw.pop("root", _ISOLATED),
         _changed=list(changed) if changed is not None else None,
         _dirty=list(dirty),
     )

@@ -1,4 +1,4 @@
-"""P2 清尾：草稿转正保注释、fixture 内 ${env:VAR} 替换。"""
+"""P2 清尾：草稿评审不动场景文件、fixture 内 ${env:VAR} 替换。"""
 import os
 
 import pytest
@@ -49,42 +49,19 @@ def _mk(tmp_path, content, name="gen-draft.yaml"):
     return p
 
 
-# ------------------------------------------------------------------ 草稿转正保注释
+# ------------------------------------------------------------------ 草稿评审不再改文件
 
-def test_approve_preserves_comments_inline(tmp_path):
-    p = _mk(tmp_path, DRAFT_INLINE)
-    review_draft(p, "dev", "approve", reports_dir=tmp_path / "reports")
-    text = p.read_text(encoding="utf-8")
-    assert text.startswith("# 这是注释，转正时必须保留")
-    assert "# 行尾注释" in text
-    data = yaml.safe_load(text)
-    assert data["tags"] == ["smoke"]
-    # 未被 safe_dump 重排：steps 仍是原来的块结构文本
-    assert 'call: "POST /api/orders"' in text
+def test_approve_leaves_every_byte_untouched(tmp_path):
+    """approve 不再做任何文本手术：注释、行尾注释、块结构、tags 全部原样。
 
-
-def test_approve_preserves_comments_block(tmp_path):
-    p = _mk(tmp_path, DRAFT_BLOCK)
-    review_draft(p, "dev", "approve", reports_dir=tmp_path / "reports")
-    text = p.read_text(encoding="utf-8")
-    assert text.startswith("# 块列表写法")
-    assert yaml.safe_load(text)["tags"] == ["smoke"]
-
-
-def test_approve_removes_tags_key_when_empty(tmp_path):
-    p = _mk(tmp_path, DRAFT_ONLY_TAG)
-    review_draft(p, "dev", "approve", reports_dir=tmp_path / "reports")
-    data = yaml.safe_load(p.read_text(encoding="utf-8"))
-    assert "tags" not in data
-
-
-def test_approve_result_is_valid_yaml_and_loses_draft(tmp_path):
+    曾经的"去 tag 保注释"逐行手术（两种 tags 写法 + YAML 重写兜底）连同它的
+    全部用例一起删除——转正判据是审批账本里的内容签名，文件本来就不该被改。
+    """
     for content in (DRAFT_INLINE, DRAFT_BLOCK, DRAFT_ONLY_TAG):
         p = _mk(tmp_path, content, name=f"d{abs(hash(content))}.yaml")
         review_draft(p, "dev", "approve", reports_dir=tmp_path / "reports")
-        data = yaml.safe_load(p.read_text(encoding="utf-8"))
-        assert "ai-generated" not in (data.get("tags") or [])
-        assert data["steps"]
+        assert p.read_text(encoding="utf-8") == content
+        assert yaml.safe_load(content)["steps"], "场景本身仍是合法 YAML"
 
 
 # ------------------------------------------------------------------ fixture 变量替换

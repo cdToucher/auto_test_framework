@@ -132,9 +132,12 @@ def test_ui_backfill_command_carries_the_run_id(proj):
     assert "--last" not in cmd
 
 
-def test_report_and_gate_next_carry_the_run_id(proj):
+def test_report_and_gate_next_carry_the_run_id(proj, approve_library):
     # 用 plan→run --record-to 而不是 run --record-new：后者产出的记录没绑定基线，
     # 会被 gate 的 unbound_record 拦下（那正是它该被拦的情形）
+    # 沿袭豁免已删除：记录里每个场景都要有签名审批。存量一次性批掉，
+    # 这组用例测的是 next 命令带不带真实 run_id，不是审批。
+    approve_library(proj)
     rid = _json("plan", "--base", "HEAD~1", "--format", "json")[1]["run_id"]
     assert _json("run", "--record-to", rid, "--format", "json")[0] == 0
     assert _json("report", rid, "--format", "json")[1]["next"] == [f"atk gate {rid} --format json"]

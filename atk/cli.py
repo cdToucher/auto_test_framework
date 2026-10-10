@@ -6,6 +6,7 @@ import json
 import re
 from collections import Counter
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -27,7 +28,7 @@ from .diff_analyzer.modules import (
 )
 from . import events
 from . import approvals as approvals_lib
-from .drafts import DRAFT_TAG, is_draft, review_draft
+from .drafts import DRAFT_TAG, review_draft
 from . import deps, envelope, layout, policy
 from .executors.runner import RunReport, Runner
 from .generator.context import build_context, commit_log, render_markdown
@@ -110,22 +111,32 @@ def _run_id_arg(run_id: Optional[str], use_last: bool, project: Path) -> str:
         raise typer.Exit(code=2)
 
 
-def _do_plan(
+@dataclass
+class _PlanSelection:
+    """一次影响面选择的全部产物：选出的场景 + 记录要落的选择依据。"""
+
+    affected: list[str]
+    groups: dict[str, list[str]]
+    reuse: list[Scenario]
+    errors: list[str]
+    git_available: bool
+    files: list[str]
+    mode: str
+    unmapped_files: list[str]
+    warnings: list[str]
+
+
+def _plan_selection(
     base: str,
     head: str,
     repo: Path,
     root: Path,
     module_map: Path,
     tag_list: Optional[list[str]],
-    title: str,
-    runs_dir: Path,
     priority: Optional[Priority] = None,
     project: Optional[Path] = None,
-) -> tuple[RunRecord, list[str], dict[str, list[str]], list[Scenario], list[str]]:
-    """plan 确定性逻辑：影响面 -> 依赖账本 -> 选场景 -> create_run。抛 RuntimeError(git)。
-
-    priority 与 run 共用口径（仅保留该优先级及更高，P0–P1 全跑），保证
-    smoke 的复用清单与实际执行一致，避免 planned_scenarios 脱节。
+) -> _PlanSelection:
+    """影响面 -> 依赖账本 -> 选场景。**不建运行记录**：--dry-run 与 plan 共用。
 
     选择方向写死在 deps.select_for_changes：任何"算不清影响面"的情形都是**多跑**
     （未映射文件、没有模块映射表、拿不到 git、场景从没跑过），绝不是选 0 个。
@@ -157,10 +168,34 @@ def _do_plan(
         sel.warnings.append(
             f"{module_map} 不可用（{map_status}），本次按全量执行；"
             "补映射后 atk validate 会双向检查它和场景库是否对得上")
-    reuse = sel.scenarios
+    return _PlanSelection(
+        affected=affected, groups=groups, reuse=sel.scenarios, errors=errors,
+        git_available=git_available, files=files, mode=sel.mode,
+        unmapped_files=sel.unmapped_files, warnings=sel.warnings,
+    )
+
+
+def _do_plan(
+    base: str,
+    head: str,
+    repo: Path,
+    root: Path,
+    module_map: Path,
+    tag_list: Optional[list[str]],
+    title: str,
+    runs_dir: Path,
+    priority: Optional[Priority] = None,
+    project: Optional[Path] = None,
+) -> tuple[RunRecord, list[str], dict[str, list[str]], list[Scenario], list[str]]:
+    """plan 确定性逻辑：选场景（_plan_selection）-> create_run。抛 RuntimeError(git)。
+
+    priority 与 run 共用口径（仅保留该优先级及更高，P0–P1 全跑），保证
+    smoke 的复用清单与实际执行一致，避免 planned_scenarios 脱节。
+    """
+    plan = _plan_selection(base, head, repo, root, module_map, tag_list, priority, project)
     commits: list[CommitInfo] = []
     head_commit = ""
-    if git_available:
+    if plan.git_available:
         try:
             head_commit = rev_parse(head, str(repo))
         except RuntimeError as e:
@@ -175,20 +210,20 @@ def _do_plan(
         except Exception as e:
             typer.secho(f"[警告] 获取提交记录失败，已置空：{e}", fg=typer.colors.YELLOW, err=True)
     rec = create_run(
-        base_ref=base if git_available else "",
-        head_ref=head if git_available else "",
+        base_ref=base if plan.git_available else "",
+        head_ref=head if plan.git_available else "",
         head_commit=head_commit,
-        affected_files=files,
-        affected_modules=affected,
-        selection_mode=sel.mode,
-        unmapped_files=sel.unmapped_files,
-        selection_warnings=sel.warnings,
-        planned_scenarios=[s.file for s in reuse],
+        affected_files=plan.files,
+        affected_modules=plan.affected,
+        selection_mode=plan.mode,
+        unmapped_files=plan.unmapped_files,
+        selection_warnings=plan.warnings,
+        planned_scenarios=[s.file for s in plan.reuse],
         title=title,
         commits=commits,
         runs_dir=str(runs_dir),
     )
-    return rec, affected, groups, reuse, errors
+    return rec, plan.affected, plan.groups, plan.reuse, plan.errors
 
 
 def _do_run(
@@ -707,9 +742,6 @@ def review(
     by: str = typer.Option(..., help="确认人（必须是 config/reviewers.yaml 里的真人）"),
     verdict: str = typer.Option(..., help="approve|reject"),
     note: str = typer.Option("", help="确认备注；reject 时必填"),
-    approval: str = typer.Option(
-        "", "--approval",
-        help="一次性审批凭证（atk approvals mint --run <id> 得到）；缺失则无法落账"),
     runs_dir: Optional[Path] = typer.Option(None, help=_LAYOUT_HELP),
     last: bool = typer.Option(False, "--last", help="使用最近一次运行记录（无需拼 run_id）"),
     project: Path = typer.Option(".", "--project", help="项目根目录（.atk/last-run.json 所在位置）"),
@@ -717,6 +749,9 @@ def review(
 ):
     """开发确认运行记录（整单确认）。reject 必须带 note。
 
+    这里**没有** --approval 凭证参数（曾有，已删）：整单确认的证据是 rec.reviews 本身，
+    gate 读的也是它。曾经的 run 级 mint 凭证写出的账本条目 target=run:<id>、key 为空，
+    永远匹配不上任何场景的断言面指纹——零收益，只留下两次 mint 加手抄一次性码的负担。
     退出码：0=确认成功；1=reject 缺 --note；2=verdict 非法或记录不存在。
     """
     if output_format not in ("text", "json"):
@@ -733,8 +768,12 @@ def review(
     except KeyError as e:
         typer.secho(str(e), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
-    _require_human_reviewer(by=by, target=f"run:{run_id}", project=project,
-                            approval=approval, verdict=verdict, note=note, key="")
+    err = approvals_lib.check_reviewer(
+        name=by, project=project,
+        author=approvals_lib.detect_author(f"run:{run_id}", project))
+    if err:
+        typer.secho(f"评审人校验失败：{err}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
     now = dt.datetime.now().isoformat(timespec="seconds")
     rec.reviews.append(ReviewRecord(by=by, verdict=verdict, note=note, at=now))
     save_run(rec, str(runs_dir), actor=by)
@@ -841,16 +880,25 @@ def _require_human_reviewer(*, by: str, target: str, project: Path, approval: st
 @app.command()
 def approvals(
     action: str = typer.Argument(..., help="mint | list"),
-    target: str = typer.Argument("", help="mint 的对象：场景 YAML 路径，或 --run <id>"),
-    run: str = typer.Option("", "--run", help="按运行记录整单审批时给 run_id"),
+    target: str = typer.Argument("", help="mint 的对象：场景 YAML 路径"),
+    grandfather: bool = typer.Option(
+        False, "--grandfather",
+        help="一次性批量转正：为场景库所有尚未批准的存量场景写签名审批（需 --by）"),
+    by: str = typer.Option("", help="批量转正的确认人（--grandfather 时必填）"),
     pending: bool = typer.Option(False, "--pending", help="列出评审日志里尚未入账的条目"),
     reports_dir: Optional[Path] = typer.Option(None, help=_LAYOUT_HELP + "；评审日志目录"),
     project: Path = typer.Option(".", "--project", help="项目根目录"),
 ):
-    """人工审批：在终端铸一次性凭证 / 查看账本。
+    """人工审批：在终端铸一次性凭证 / 查看账本 / 存量场景一次性批量转正。
 
     mint 是**唯一**能写入审批记录的门：它要求交互式终端，AI/CI 驱动的 shell 一律 exit 2。
-    凭证绑定"对象 + 断言面指纹"，断言改一个字就得重新铸一枚。
+    凭证绑定"场景 + 断言面指纹"，断言改一个字就得重新铸一枚。
+    只认场景路径：run 级整单凭证（曾有 --run）写出的条目 key 为空，永远匹配不上
+    任何断言面，没有任何读取方——整单确认的证据在运行记录的 reviews 里。
+
+    --grandfather：沿袭豁免删除后，历史场景在下次 gate 前必须批过一次。逐份
+    mint + review-draft 对几十条存量场景不现实，这条一次性通道同样要求交互式
+    终端、一次确认，为每份未批准的断言面写入签名审批。
     """
     if action not in ("mint", "list"):
         raise typer.BadParameter("action 必须是 mint|list")
@@ -873,26 +921,62 @@ def approvals(
                 typer.echo(f"未入账评审：{e['rel']}  by {e.get('by') or '-'} "
                            f"{e.get('at') or ''}（日志说批过，但账本里没有对应记录）")
         return
-    if run:
-        tgt, key = f"run:{run}", ""
-    else:
-        if not target:
-            raise typer.BadParameter("mint 需要给场景路径，或用 --run <run_id>")
-        tgt = approvals_lib._rel(Path(target), project)
-        key = approvals_lib.expect_hash(target)
-        if not key:
-            typer.secho("读不到该场景的断言面（文件不存在或无步骤），不予审批",
-                        fg=typer.colors.RED, err=True)
-            raise typer.Exit(code=2)
-    display = ""
-    if target and not run:
-        display = "\n".join(approvals_lib.expect_surface(
-            __import__("yaml").safe_load(Path(target).read_text(encoding="utf-8"))))
+    if grandfather:
+        _grandfather_cmd(by=by, project=project)
+        return
+    if not target:
+        raise typer.BadParameter("mint 需要给场景 YAML 路径")
+    tgt = approvals_lib._rel(Path(target), project)
+    key = approvals_lib.expect_hash(target)
+    if not key:
+        typer.secho("读不到该场景的断言面（文件不存在或无步骤），不予审批",
+                    fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    display = "\n".join(approvals_lib.expect_surface(
+        __import__("yaml").safe_load(Path(target).read_text(encoding="utf-8"))))
     try:
         approvals_lib.mint(target=tgt, key=key, project=project, display=display)
     except RuntimeError as e:
         typer.secho(str(e), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
+
+
+def _grandfather_cmd(*, by: str, project: Path) -> None:
+    """存量场景一次性批量转正的实现（CLI 侧薄封装，逻辑在 approvals.grandfather）。"""
+    from .store.loader import load_scenarios
+
+    if not by.strip():
+        typer.secho("--grandfather 需要 --by <确认人>：审批记录必须落到具体的人",
+                    fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    err = approvals_lib.check_reviewer(name=by, project=project)
+    if err:
+        typer.secho(f"评审人校验失败：{err}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    scenarios, load_errors = load_scenarios(layout.scenarios_dir(project))
+    for e in load_errors:
+        typer.secho(f"[跳过] {e}", fg=typer.colors.YELLOW, err=True)
+    todo: list[tuple[str, str]] = []
+    for s in scenarios:
+        if not s.file:
+            continue
+        rel = approvals_lib._rel(Path(s.file), project)
+        key = approvals_lib.expect_hash(s.file)
+        if not key:
+            typer.secho(f"读不到断言面，跳过：{rel}", fg=typer.colors.YELLOW, err=True)
+            continue
+        if approvals_lib.is_approved(target=s.file, project=project):
+            continue
+        todo.append((rel, key))
+    if not todo:
+        typer.echo("场景库里没有尚未批准的存量场景")
+        return
+    try:
+        written = approvals_lib.grandfather(targets=todo, by=by, project=project)
+    except RuntimeError as e:
+        typer.secho(str(e), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    typer.echo(f"已写入 {len(written)} 条签名审批：{approvals_lib.approvals_file(project)}")
 
 
 #: 终端只给这么长的响应现场；完整内容留在 run.yaml 与 HTML 报告里
@@ -953,7 +1037,8 @@ def run(
 ):
     """执行场景并生成 HTML 报告。
 
-    退出码：0=全部通过；1=存在用例失败或场景加载错误；2=仅环境受阻或选中为空。
+    退出码：0=全部通过；1=存在用例失败（断言/配置错误）；2=环境受阻、选中为空，
+    或场景库里有文件加载不了（坏 YAML 不是产品回归，不能算成 1）。
     含 ui: 步骤的场景标记为「待实测」，不计失败也不计受阻，由 atk gate 检查是否已回填。
     """
     if output_format not in ("text", "json"):
@@ -1036,8 +1121,12 @@ def run(
     for w in report.env_warnings:
         typer.secho(f"[警告] {w}", fg=typer.colors.YELLOW, err=True)
     if report.total == 0 and not report.load_errors and not allow_empty:
+        hint = "env/module/tags/priority 过滤后为空"
+        if report.ui_skipped:
+            hint = (f"--skip-ui 跳过了 {report.ui_skipped} 个纯 UI 场景，"
+                    "本次没有任何可执行步骤")
         typer.secho(
-            "选中 0 个场景（env/module/tags/priority 过滤后为空）——空跑不算通过；"
+            f"选中 0 个场景（{hint}）——空跑不算通过；"
             "确认选择条件可用 atk run --dry-run，场景库为空先跑 atk init 或让 AI 按 "
             "atk-authoring 起草；确需空跑加 --allow-empty",
             fg=typer.colors.RED, err=True,
@@ -1047,6 +1136,8 @@ def run(
     extra = ""
     if report.pending_ui_count:
         extra += f"，待实测 {report.pending_ui_count}"
+    if report.ui_skipped:
+        extra += f"，跳过纯 UI 场景 {report.ui_skipped}（--skip-ui，不计入结论）"
     if report.skipped_count:
         extra += f"，跳过 {report.skipped_count}"
     say(
@@ -1083,6 +1174,10 @@ def run(
         # --record-new 走的是就地建记录，不经过 _merge_report_into_run，账本单独补一次
         deps.record_execution(report.results, run_id=created_run_id,
                               env=report.env_name, path=deps.ledger_path(project))
+        # console 运行按钮与定时任务走的都是这条路；不说清楚，用户会把绿勾和 HTML
+        # 报告读成"这条记录能当门禁用"，回头被 atk gate 拦下还得回头查为什么。
+        say(f"注意：{created_run_id} 未绑定 Git 基线，不能作为合并门禁依据"
+            "（atk gate 会以 unbound_record 拦下）；合并前请用 atk plan --base <基线> 建记录")
 
     if output_format == "json":
         pending_ui = report.pending_ui_count
@@ -1106,8 +1201,9 @@ def run(
                     "passed": report.passed_count,
                     "failed": report.failed_count,
                     "blocked": blocked,
-                    "pending_ui": pending_ui,
-                    "skipped": report.skipped_count,
+                "pending_ui": pending_ui,
+                "skipped": report.skipped_count,
+                "ui_skipped": report.ui_skipped,
                 },
                 "failed_steps": failed_steps,
                 "load_errors": report.load_errors,
@@ -1322,6 +1418,12 @@ def smoke(
     skip_ui: bool = typer.Option(
         False, "--skip-ui", help="跳过 ui: 步骤（不计入结论，也不登记待实测意图）"
     ),
+    module: Optional[str] = typer.Option(
+        None, "--module", help="只执行该模块的场景（与 atk run --module 同口径）"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="只列会执行哪些场景：不建记录、不发请求、不跑门禁"
+    ),
     allow_empty: bool = typer.Option(
         False, "--allow-empty", help="允许选中 0 场景仍视为通过（默认 0 选中=受阻 exit 2）"
     ),
@@ -1347,6 +1449,51 @@ def smoke(
     env_file = _resolve(env_file, L["env_file"])
     report_dir = _resolve(report_dir, L["report_dir"])
     runs_dir = _resolve(runs_dir, L["runs_dir"])
+    # 0) 预演：只列会跑什么。与 run --dry-run 同理念——先看清再真跑。
+    #     selection 与 plan 完全同一条代码路径，区别只有"不建记录、不执行、不判门禁"。
+    if dry_run:
+        try:
+            plan = _plan_selection(base, head, repo, root, module_map, tag_list,
+                                   priority, project=project)
+        except RuntimeError as e:
+            typer.secho(str(e), fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+        for e in plan.errors:
+            typer.secho(f"[跳过] {e}", fg=typer.colors.YELLOW, err=True)
+        for w in plan.warnings:
+            typer.secho(f"[警告] {w}", fg=typer.colors.YELLOW, err=True)
+        selected = [
+            {"scenario": s.scenario, "module": s.module,
+             "priority": s.priority.value, "file": s.file}
+            for s in plan.reuse
+        ]
+        if output_format == "json":
+            typer.echo(envelope.dumps(
+                "smoke",
+                {
+                    "dry_run": True,
+                    "run_id": None,
+                    "affected_modules": plan.affected,
+                    "selection_mode": plan.mode,
+                    "selected": selected,
+                },
+                next_steps=[f"atk smoke --base {base} --head {head}"
+                            + (f" --env {env}" if env else "")
+                            + f" --title \"{title or '<功能>'}\""],
+                blockers=list(plan.errors),
+                ok=True,
+                exit_code=0,
+            ))
+        else:
+            say_title = f"功能：{title}" if title else "功能：（未命名）"
+            typer.echo(say_title)
+            typer.echo(f"affected_modules: {', '.join(plan.affected) or '（无映射命中）'}")
+            for s in plan.reuse:
+                typer.echo(f"将执行: [{s.priority.value}] {s.scenario} ({s.file})")
+            if not plan.reuse:
+                typer.echo("（选中 0 个场景）")
+            typer.echo("\n预演结束：去掉 --dry-run 才会真正执行、建记录、判门禁")
+        raise typer.Exit(code=0)
     # 1) plan 逻辑复用（新建 run_id；priority 与执行侧同口径过滤复用清单）
     try:
         rec, affected, groups, reuse, errors = _do_plan(
@@ -1356,6 +1503,12 @@ def smoke(
     except RuntimeError as e:
         typer.secho(str(e), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
+    if module:
+        # 显式收窄到单模块：复用清单与执行同步收窄， planned_scenarios 跟着更新，
+        # 否则 gate 的 deps_stale 会判"计划了 N 个但没跑"。
+        reuse = [s for s in reuse if s.module == module]
+        rec.planned_scenarios = sorted({s.file for s in reuse if s.file})
+        save_run(rec, str(runs_dir))
     run_id = rec.run_id
     write_last_run(
         project, run_id, base=base, head=head, title=title,
@@ -1468,14 +1621,17 @@ def smoke(
             results=[r for _, rep in module_reports for r in rep.results],
             load_errors=[e for _, rep in module_reports for e in rep.load_errors],
             env_warnings=[w for _, rep in module_reports for w in rep.env_warnings],
+            ui_skipped=sum(rep.ui_skipped for _, rep in module_reports),
         )
         for w in dict.fromkeys(combined.env_warnings):
             typer.secho(f"[警告] {w}", fg=typer.colors.YELLOW, err=True)
         latest_path = render_html(combined, Path(report_dir) / "report-latest.html")
+        skip_note = (f"，跳过纯 UI 场景 {combined.ui_skipped}（--skip-ui，不计入结论）"
+                     if combined.ui_skipped else "")
         say(
             f"\n合计：通过 {combined.passed_count}/{combined.total}"
             f"（用例失败 {combined.failed_count}，受阻 {combined.blocked_count}，"
-            f"待实测 {combined.pending_ui_count}，"
+            f"待实测 {combined.pending_ui_count}{skip_note}，"
             f"加载跳过 {len(combined.load_errors)}）\n报告：{latest_path}"
         )
         if combined.total == 0 and not combined.load_errors and not allow_empty \
@@ -1528,7 +1684,7 @@ def smoke(
         raise typer.Exit(code=2)
     case_fail = policy.failed_names(fresh.scenarios)
     pending = policy.pending_titles(fresh.intents)
-    drafts = policy.draft_names(fresh.scenarios)
+    drafts = policy.unapproved_draft_names(fresh.scenarios, project)
 
     if output_format == "json":
         next_steps: list[str] = []
@@ -1830,7 +1986,13 @@ def init(
         gitignore = root / ".gitignore"
         needed = ["# atk 可再生产物（场景库 .atk/scenarios/ 与配置请照常提交）",
                   ".atk/reports/", ".atk/last-run.json", ".atk/manifest.json",
-                  ".atk/deps.yaml"]
+                  ".atk/deps.yaml",
+                  # console -d 的进程状态与日志：起一次控制台留两个文件，
+                  # 不进清单就会在 git status 里常驻
+                  ".atk/console-*.json", ".atk/console-*.log",
+                  "# 审批账本 .atk/approvals.yaml 必须提交：CI 的 atk gate 要验签，"
+                  "而 mint 只能在交互式终端执行",
+                  ]
         if not gitignore.exists():
             gitignore.write_text("\n".join(needed) + "\n", encoding="utf-8")
             created.append(str(gitignore))
@@ -2132,7 +2294,7 @@ def _agent_run_verdict(root: Path, L: dict[str, Path], run_id: str, head: str,
     target = f" --record-to {run_id}"
     rerun = ([f"atk run --env {env}{target}"] if env else [f"atk run{target}"])
     pending = policy.pending_titles(rec.intents)
-    drafts = policy.draft_names(rec.scenarios)
+    drafts = policy.unapproved_draft_names(rec.scenarios, root)
     case_fail = policy.failed_names(rec.scenarios)
     blocked = policy.blocked_names(rec.scenarios)
     try:

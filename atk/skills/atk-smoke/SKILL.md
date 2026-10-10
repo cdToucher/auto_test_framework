@@ -51,6 +51,8 @@ description: 开发者给一句功能描述或基线、要求验证功能时使�
 - 为了跑绿去改场景断言、把 `blocked` 调成 `pass`。
 - 靠"删掉 `ui:` 步骤"或把草稿文件移走来让 gate 放行：门禁同时看运行记录里落盘的 `draft`
   标记与磁盘现状，记录时点是草稿、文件又不见了，**照样算未评审**，只会多一条拦截。
-- 手工把 YAML 里的 `ai-generated` 摘掉来"转正"：转正只认 `atk review-draft --verdict approve`
-  这一条路（它会去掉 tag 并留下评审记录）。摘标目前骗得过门禁，但那是在伪造评审结论，
-  人查记录时发现没有对应 `review-draft`，整单结论一起作废。
+- 手工把 YAML 里的 `ai-generated` 摘掉或补写来"转正"：转正只认审批账本里以断言面指纹
+  为键、带有效签名的一条记录（`atk approvals mint` 在交互式终端铸凭证，再
+  `atk review-draft --verdict approve --approval <码>` 写入）。tag 只是溯源标记——
+  approve 不再改场景文件，摘不摘它都既不能转正也不能洗白；改一条断言，指纹变，
+  旧审批自动失效，必须重审。

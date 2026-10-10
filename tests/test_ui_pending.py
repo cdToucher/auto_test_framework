@@ -82,15 +82,37 @@ def test_ui_step_detail_points_to_record(proj):
     assert "atk record" in step.detail
 
 
-def test_skip_ui_marks_scenario_skipped(proj):
+def test_skip_ui_drops_all_ui_scenarios_from_results(proj):
+    """--skip-ui 后纯 UI 场景不计入结论：只剩 API 场景参与判定。
+
+    旧实现把它们记成 skipped（pending 档）→ exit 0：库里只有 UI 场景时，
+    "通过 0/3（跳过 3）"是一条绿条，而实际上一个字节都没测。
+    """
     rep = Runner(
         env_file=proj / "config" / "environments.yaml",
         scenarios_root=proj / "scenarios",
     ).run(env_name="local", tags=["e2e"], skip_ui=True)
-    assert rep.pending_ui_count == 0
-    assert rep.skipped_count == 1
-    assert rep.blocked_count == 0
-    assert rep.exit_code == 0
+    assert rep.total == 0
+    assert rep.ui_skipped == 1
+    assert rep.skipped_count == 0
+
+
+def test_skip_ui_all_ui_library_is_blocked_not_green(proj, monkeypatch):
+    """CLI 层：只剩 UI 场景又显式 --skip-ui → 空跑，exit 2 而不是绿条。"""
+    monkeypatch.chdir(proj)
+    res = runner_cli.invoke(app, ["run", "--tags", "e2e", "--skip-ui"])
+    assert res.exit_code == 2, res.output
+    assert "0 个场景" in res.output and "UI" in res.output
+
+
+def test_skip_ui_keeps_api_scenarios_running(proj):
+    """混合库里 --skip-ui 只丢 UI 场景，API 场景照常跑并计入结论。"""
+    rep = Runner(
+        env_file=proj / "config" / "environments.yaml",
+        scenarios_root=proj / "scenarios",
+    ).run(env_name="local", skip_ui=True)
+    assert rep.total == 1
+    assert rep.ui_skipped == 1
 
 
 def test_empty_scenario_is_skipped_not_blocked():

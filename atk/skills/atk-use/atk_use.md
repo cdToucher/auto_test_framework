@@ -51,7 +51,8 @@ atk record --last --from-json <result.json> # UI 实测批量回填（推荐）
 atk review-draft <草稿.yaml> --by <人> --verdict approve|reject
 atk review --last --by <人> --verdict approve
 atk gate --last --format json
-atk approvals mint <草稿.yaml|--run <run_id>>   # 只能由人在交互式终端执行
+atk approvals mint <草稿.yaml>               # 只能由人在交互式终端执行
+atk approvals mint --grandfather --by <人>   # 存量场景一次性批量转正（沿袭豁免已删）
 atk gate <run_id> --allow-unbound              # 明知故犯：判定一条未绑定基线的记录
 atk approvals list                              # 看审批账本与待核销凭证
 atk report --last                           # 渲染 HTML 报告
@@ -112,9 +113,10 @@ CI 只需 `test $? -le 1` 就能区分"业务不通过"与"没测成"。
   （凭空补覆盖面要显式 `--allow-new-intent`）。
 - 不要手改 `reports/runs/<id>/run.yaml`：当前态与 `events.yaml` 会被 gate 交叉校验
   （流水是 HMAC 链，逐条签名并链住上一条），改记录或改流水都会被判"结论不可信"。
-- 已知的残余缺口（诚实声明，未修）：新场景若**先被提交**、再以那次提交或其后的引用当
-  基线跑 plan，会被当成"早于基线存在"而享受沿袭豁免。锚定到受保护分支才能封掉，
-  见 tests/test_forgery_gates.py::test_committed_before_the_base_is_grandfathered。
+- **没有沿袭豁免**：记录里每个场景的断言面都要有签名审批，没批过就是没批过。
+  曾经的"早于基线存在就不用批"已删除——AI 把新场景先 commit、再以那次提交当基线跑
+  plan，就能让未经任何人审的断言面过门禁。存量场景的一次性迁移：
+  `atk approvals mint --grandfather --by <人>`（同样要交互式终端，一次确认逐份落账）。
 - 选中 0 个场景按受阻处理（exit 2），空跑不算通过。
 - **影响面算不清就多跑**：有未映射的代码变更、`modules.yaml` 缺失或不可解析、拿不到
   git 基线时，`plan` 自动改成 `selection.mode = full_suite`（跑全库），绝不返回空选择。

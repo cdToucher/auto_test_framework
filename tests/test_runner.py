@@ -75,6 +75,40 @@ def test_runner_environment_error(tmp_path):
     assert report.exit_code == 2
 
 
+def test_runner_missing_env_var_blocks_before_sending(tmp_path, mock_base_url, monkeypatch):
+    """${env:VAR} 未设置：不发请求，按环境受阻记（exit 2），detail 点名缺哪个变量。
+
+    场景打的是 mock server 的 /ping（会返回 200）——请求若真发出去，结果会是
+    passed/error_class=none。断言 environment 同时证明了"没发请求"。
+    空凭据打到线上再拿 401 会被归类成断言失败（exit 1，像产品回归），
+    而这个洞的修复方向就是 env.py 自己承诺的"不静默按空串发请求"。
+    """
+    monkeypatch.delenv("ATK_RUNNER_MISSING_TOK", raising=False)
+    (tmp_path / "environments.yaml").write_text(
+        f"it:\n  base_url: {mock_base_url}\n"
+        "  vars:\n    tok: '${env:ATK_RUNNER_MISSING_TOK}'\n",
+        encoding="utf-8",
+    )
+    sc_dir = tmp_path / "scenarios"
+    sc_dir.mkdir()
+    (sc_dir / "s.yaml").write_text(
+        'scenario: 缺凭据\nenv: it\nsteps:\n'
+        '  - api:\n      call: "GET /ping"\n'
+        "      headers: {Authorization: 'Bearer ${tok}'}\n"
+        "      expect: {status: 200}\n",
+        encoding="utf-8",
+    )
+    runner = Runner(env_file=tmp_path / "environments.yaml", scenarios_root=sc_dir)
+    report = runner.run(env_name="it")
+    r = report.results[0]
+    assert r.error_class == "environment"
+    assert "ATK_RUNNER_MISSING_TOK" in r.steps[0].detail
+    # 受阻不是用例失败：退出码 2（没测成），不是 1（产品坏了）
+    assert report.failed_count == 0
+    assert report.blocked_count == 1
+    assert report.exit_code == 2
+
+
 def test_no_variable_leak_between_scenarios(tmp_path, mock_base_url):
     (tmp_path / "environments.yaml").write_text(
         f"it:\n  base_url: {mock_base_url}\n  vars: {{test_sku: SKU-001}}\n"

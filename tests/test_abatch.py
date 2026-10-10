@@ -155,8 +155,10 @@ def test_a4_do_plan_priority_filters_reuse(tmp_path, monkeypatch):
     assert rec.planned_scenarios == ["scenarios/demo/a.yaml"]
 
 
-def test_a4_smoke_priority_planned_equals_executed(tmp_path, mock_base_url, monkeypatch):
+def test_a4_smoke_priority_planned_equals_executed(tmp_path, mock_base_url, monkeypatch,
+                                             approve_library):
     repo = _make_tag_priority_repo(tmp_path / "prio-smoke", mock_base_url)
+    approve_library(repo)
     monkeypatch.chdir(repo)
     r = runner.invoke(app, ["smoke", "--base", "HEAD~1", "--head", "HEAD",
                             "--env", "local", "--priority", "P0"])
@@ -168,8 +170,10 @@ def test_a4_smoke_priority_planned_equals_executed(tmp_path, mock_base_url, monk
     assert sorted(rec.planned_scenarios) == executed
 
 
-def test_a4_smoke_empty_affected_backfills_planned(tmp_path, mock_base_url, monkeypatch):
+def test_a4_smoke_empty_affected_backfills_planned(tmp_path, mock_base_url, monkeypatch,
+                                              approve_library):
     repo = _make_repo(tmp_path / "nomod", SC_OK)
+    approve_library(repo)
     monkeypatch.chdir(repo)
     _write_env(repo, mock_base_url)
     (repo / "README.md").write_text("hello")
@@ -214,8 +218,10 @@ def _make_multi_repo(base, mock_base_url):
     return base
 
 
-def test_a4_smoke_multi_module_single_report_split_junit(tmp_path, mock_base_url, monkeypatch):
+def test_a4_smoke_multi_module_single_report_split_junit(tmp_path, mock_base_url, monkeypatch,
+                                                      approve_library):
     repo = _make_multi_repo(tmp_path / "multi", mock_base_url)
+    approve_library(repo)
     monkeypatch.chdir(repo)
     r = runner.invoke(app, ["smoke", "--base", "HEAD~1", "--head", "HEAD",
                             "--env", "local", "--junit", "reports/junit.xml"])
@@ -232,8 +238,9 @@ def test_a4_smoke_multi_module_single_report_split_junit(tmp_path, mock_base_url
     assert "demo-冒烟" in latest and "other-冒烟" in latest
 
 
-def test_a4_smoke_prints_unmapped(tmp_path, mock_base_url, monkeypatch):
+def test_a4_smoke_prints_unmapped(tmp_path, mock_base_url, monkeypatch, approve_library):
     repo = _make_repo(tmp_path / "unmapped", SC_OK)
+    approve_library(repo)
     monkeypatch.chdir(repo)
     _write_env(repo, mock_base_url)
     (repo / "README.md").write_text("hello")

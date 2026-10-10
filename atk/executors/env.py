@@ -16,8 +16,9 @@ class EnvConfig(BaseModel):
     """一个被测环境的配置（已解析）。
 
     vars 与 base_url 里的 `${env:NAME}` 在加载期就替换掉——凭据只活在进程环境里，
-    不写进 environments.yaml、更不进仓库。missing_env 记下未设置的引用，
-    让 run 显性告警，而不是静默按空串发请求（那会把配置问题伪装成断言失败）。
+    不写进 environments.yaml、更不进仓库。missing_env 记下未设置的引用，Runner 据此在
+    **发请求之前**把涉及该环境的场景按受阻拦下（environment 档，exit 2）：空凭据打到
+    服务端只会拿到 401，那会被归类成断言失败（exit 1，像产品回归），而它是"没测成"。
     """
     base_url: str
     vars: dict[str, Any] = {}

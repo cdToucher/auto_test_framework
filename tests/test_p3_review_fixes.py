@@ -175,7 +175,15 @@ def test_unresolved_variable_config_error(tmp_path, mock_base_url, monkeypatch):
     assert "变量未解析" in r.output and "${nope}" in r.output
 
 
-def test_missing_env_var_warns(tmp_path, mock_base_url, monkeypatch):
+def test_missing_env_var_blocks_without_sending(tmp_path, mock_base_url, monkeypatch):
+    """${env:VAR} 缺失：按受阻处理（exit 2），不发请求，消息点名缺哪个变量。
+
+    env.py 的契约原文是"让 run 显性告警，而不是静默按空串发请求（那会把配置问题
+    伪装成断言失败）"。旧实现只把警告印在终端、退出码照算：空 token 发出去拿到
+    401，被归类成 assertion——exit 1，看着像产品回归，实为凭据没配。
+    场景打的是 mock server 的 /ping（返回 200）：请求若真发出去结果会是 passed。
+    所以 blocked + 点名变量同时证明"没发请求"与"原因可读"。
+    """
     monkeypatch.delenv("ATK_DEFINITELY_MISSING", raising=False)
     (tmp_path / "config").mkdir()
     (tmp_path / "config" / "environments.yaml").write_text(
@@ -188,8 +196,8 @@ def test_missing_env_var_warns(tmp_path, mock_base_url, monkeypatch):
     (sc / "ok.yaml").write_text(PASS_SCEN.replace("module: demo", "module: m"), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     r = runner.invoke(app, ["run"])
-    assert r.exit_code == 0, r.output
-    assert "环境变量未设置" in r.output and "ATK_DEFINITELY_MISSING" in r.output
+    assert r.exit_code == 2, r.output
+    assert "ATK_DEFINITELY_MISSING" in r.output
 
 
 # ---------- A2：module 缺省按一级目录兜底 ----------

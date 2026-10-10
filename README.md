@@ -29,7 +29,7 @@ atk smoke --base main --title "优惠券下单" --format json
 ```
 
 `modules.yaml` 是可选项：不配代码→模块映射时 `smoke` 自动全量执行（慢但绝不漏测）；
-配好后才享受"按变更增量选场景"。凭据永远不入库：`${env:VAR}` 加载期解析、缺失显式告警；
+配好后才享受"按变更增量选场景"。凭据永远不入库：`${env:VAR}` 加载期解析、缺失即在发请求前按受阻拦下（exit 2）——不会把空凭据打出去换一个 401 断言失败；
 临时参数 `atk run --set k=v`（优先级 env < fixture < `--set` < capture）。
 
 ## 目录布局：一切产物收束 `.atk/`
@@ -80,7 +80,7 @@ atk smoke --base main --title "优惠券下单" --format json
 | `atk record` | 回填实测结论（pass/fail/suspect/blocked + 截图）；**status 必须显式给出**；同名意图就地更新；`--from-json` |
 | `atk report` / `atk last` | 渲染运行记录 HTML（含截图缩略）/ 查看最近操作对象 |
 | `atk review` | 开发整单确认（approve/reject），仅告警不拦截 |
-| `atk review-draft` | AI 草稿评审：approve 去 `ai-generated` tag 转正，reject 移走留档 |
+| `atk review-draft` | AI 草稿评审：approve 写入签名审批账本（tag 保留作溯源），reject 移走留档 |
 | `atk gate` | 合并门禁（见下节）；`--format json` 输出结构化 verdicts/blocking/warnings |
 | `atk purge` | 删除 init 生成物料（manifest 指纹保护手工内容；`--yes` 免确认；`--with-reports` 连运行记录一起清） |
 | `atk console` | Web 控制台（需 `.[console]` extra） |
@@ -101,7 +101,7 @@ atk smoke --base main --title "优惠券下单" --format json
 | 工作区未提交文件 / 环境受阻 / 未经整单确认 | 仅告警 |
 
 与之配套：`run`/`smoke` **选中 0 场景按受阻处理（exit 2）**——模块名打错、场景库为空
-都不可能"静默全绿"；未解析的 `${var}` 发请求前拦截，`${env:VAR}` 缺失显式告警。
+都不可能"静默全绿"；未解析的 `${var}` 发请求前拦截（config，exit 1）；`${env:VAR}` 缺失同样在发请求前拦下，按环境受阻处理（exit 2）——空凭据不会出现在线上请求里。
 
 ## 断言语法
 

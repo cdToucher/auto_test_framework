@@ -47,12 +47,41 @@ def human_approval(monkeypatch, tmp_path):
     monkeypatch.setattr("typer.confirm", lambda *a, **k: True)
 
     def make(target: str, key: str | None = None, project: str = ".") -> str:
-        bind = key if key is not None else (approvals.expect_hash(target) if target and not
-                                            target.startswith("run:") else "")
-        token, _ = approvals.mint(target=approvals._rel(Path(target), Path(project))
-                                  if not target.startswith("run:") else target,
+        bind = key if key is not None else approvals.expect_hash(target)
+        token, _ = approvals.mint(target=approvals._rel(Path(target), Path(project)),
                                   key=bind, project=project)
         return token
 
     return make
+
+
+@pytest.fixture
+def approve_library(monkeypatch):
+    """把临时项目场景库里尚未批准的存量场景一次性批掉（CLI --grandfather 的测试侧等价物）。
+
+    沿袭豁免删除后，gate 要求记录里每个场景的断言面都有签名审批；存量库的一次性
+    迁移就是这条路径。返回写入的条目列表。
+    """
+    from atk import approvals
+    from atk.layout import scenarios_dir
+    from atk.store.loader import load_scenarios
+
+    monkeypatch.setattr(approvals, "human_present", lambda: True)
+    monkeypatch.setattr("typer.confirm", lambda *a, **k: True)
+
+    def _do(project, by: str = "qa"):
+        root = Path(project)
+        scs, _errors = load_scenarios(scenarios_dir(root))
+        targets = []
+        for s in scs:
+            if not s.file:
+                continue
+            key = approvals.expect_hash(s.file)
+            if key and not approvals.is_approved(target=s.file, project=root):
+                targets.append((approvals._rel(Path(s.file), root), key))
+        if not targets:
+            return []
+        return approvals.grandfather(targets=targets, by=by, project=root)
+
+    return _do
 

@@ -134,11 +134,13 @@ def test_no_key_at_all_means_nothing_is_approved(proj, monkeypatch):
     assert "签名密钥不可用" in keystore.missing_key_hint()
 
 
-def test_committed_before_the_base_is_grandfathered(proj):
-    """已知残余缺口，故意钉成测试而不是悄悄修掉：先提交、再以该提交当基线 → 沿袭豁免。
+def test_committed_before_the_base_is_not_exempt(proj):
+    """先提交再当基线，不能自助转正——沿袭豁免已删除。
 
-    修法是让基线锚到受保护分支（而不是 HEAD~1 这种可被自己的提交推动的引用）。
-    这条测试的价值在于：一旦有人改了豁免条件，这里会先响，逼他重新读一遍权衡。
+    这条测试曾以相反的面目存在（test_..._is_grandfathered：把"先 commit 即豁免"
+    钉成已知缺口）。豁免本身才是缺口：AI 完全做得到"先 commit 再 plan"，
+    于是未经任何人审的断言面直接过门禁。现在：没批过就是没批过，
+    存量场景用 `atk approvals mint --grandfather` 一次性转正（同样要交互式终端）。
     """
     f = proj / "scenarios" / "order" / "late.yaml"
     f.write_text(SCEN.replace("基线", "提交后再看"), encoding="utf-8")
@@ -146,7 +148,8 @@ def test_committed_before_the_base_is_grandfathered(proj):
     _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "commit it", cwd=proj)
     rid, _runs = _bound_record(proj, name="提交后再看", file="scenarios/order/late.yaml")
     res = _gate(proj, rid)
-    assert res.exit_code == 0, (res.output, "豁免条件已变：确认是不是要把基线锚到受保护分支")
+    assert res.exit_code == 1, (res.output, "先提交再当基线不能免审批")
+    assert any("未经人工审批" in b for b in _blocking(res))
 
 
 # ---------------------------------------------------------------- 绕过 B

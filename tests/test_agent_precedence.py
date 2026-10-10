@@ -28,7 +28,7 @@ def _git(*a, cwd):
 
 
 @pytest.fixture
-def repo(tmp_path, monkeypatch, mock_base_url):
+def repo(tmp_path, monkeypatch, mock_base_url, approve_library):
     (tmp_path / "scenarios" / "demo").mkdir(parents=True)
     (tmp_path / "scenarios" / "demo" / "login.yaml").write_text(SCEN_OK, encoding="utf-8")
     (tmp_path / "config").mkdir()
@@ -45,9 +45,10 @@ def repo(tmp_path, monkeypatch, mock_base_url):
     install_skills(tmp_path, package_skill_texts())
     _git("init", "-q", cwd=tmp_path)
     _git("add", "-A", cwd=tmp_path)
-    # 场景与配置都要在 base 处就存在：否则它们是"未跟踪的新文件"，
-    # 会先撞上审批判据（touched），测不到梯子本身
     _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base", cwd=tmp_path)
+    # 沿袭豁免已删除：记录里每个场景都要有签名审批，gate 才放行。
+    # 梯子测的是优先级，不是审批——存量场景按新契约一次性批掉，别让它挡住每个用例。
+    approve_library(tmp_path)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 

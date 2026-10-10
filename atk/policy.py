@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .diff_analyzer.git_diff import changed_files, rev_parse, uncommitted_files
-from .drafts import DRAFT_TAG, is_draft
+from .drafts import is_draft
 from .run_store import review_status
 
 TIER_PASS = "pass"
@@ -196,15 +196,36 @@ class GateCheck:
 
 
 def draft_names(summaries: Any) -> list[str]:
-    """记录里仍未过人工评审的草稿名。
+    """记录里仍是 AI 草稿的场景名（tag 是溯源标记，approve 后依然带 tag）。
 
-    运行时记录的 draft 与磁盘现状取并集：磁盘仍是草稿、或草稿文件已消失
-    （reject 移走）都算未评审——防止"跑完草稿再 reject"让未审定结果混过门禁。
+    磁盘现状与运行时快照取并集：磁盘仍是草稿、或草稿文件已消失
+    （reject 移走）都算草稿——防止"跑完草稿再 reject"让未审定结果混过门禁。
     """
     return sorted({
         s.name for s in summaries
         if (s.file and is_draft(s.file)) or (s.draft and s.file and not Path(s.file).exists())
     })
+
+
+def unapproved_draft_names(summaries: Any, project: Path | str = ".") -> list[str]:
+    """草稿场景里**断言面尚未获得真人签名审批**的那些名字。
+
+    判据从"tag 还在不在"换成"账本批没批过"：tag 是 AI 能写的字符串（删掉它
+    就冒充转正），签名账本不是。approve 因此不再改场景文件，tag 永久保留；
+    若不改这里，批准过的草稿会永远被 gate / atk agent 当成未评审介入点。
+    """
+    from .approvals import is_approved
+
+    out = []
+    for s in summaries:
+        is_draft_now = (s.file and is_draft(s.file)) or (
+            s.draft and s.file and not Path(s.file).exists())
+        if not is_draft_now:
+            continue
+        if s.file and is_approved(target=s.file, project=project):
+            continue
+        out.append(s.name)
+    return sorted(out)
 
 
 def failed_names(summaries: Any) -> list[str]:
@@ -326,11 +347,18 @@ def _scenario_tally(ctx: GateContext) -> list[Note]:
 
 
 def _unreviewed_drafts(ctx: GateContext) -> list[Note]:
-    unreviewed = draft_names(ctx.rec.scenarios)
+    """记录里仍是草稿的场景，其断言面必须有一条真人签名审批。
+
+    不看 tag 是否还在（approve 不再摘 tag，tag 只作溯源），只看内容：
+    以断言面 sha256 为键查审批账本，而那条记录只能凭交互式终端铸出的一次性
+    凭证写入。改一条断言 → 指纹变 → 必须重审。
+    """
+    unreviewed = unapproved_draft_names(ctx.rec.scenarios, ctx.root)
     if not unreviewed:
         return []
     return [Note(f"存在未评审AI草稿 {len(unreviewed)} 个: " + ", ".join(unreviewed)
-                 + f"（请先 atk review-draft 评审转正，{DRAFT_TAG} tag 未去掉不得参与门禁）",
+                 + "（请先 atk approvals mint <文件> 铸凭证，再 atk review-draft "
+                   "<文件> --by <人> --verdict approve --approval <码>）",
                  ok=False)]
 
 
@@ -402,32 +430,32 @@ def _unmapped_note(ctx: GateContext) -> list[Note]:
 
 
 def _unapproved_expects(ctx: GateContext) -> list[Note]:
-    """本次变更碰过的场景，断言面必须有一条人工审批记录。
+    """本次跑过的场景，断言面必须有一条人工审批记录。
 
-    为什么不看 ai-generated tag：那个字符串是 AI 自己写进 YAML 的，删掉就等于"已转正"。
-    这里看**内容**：以断言面 sha256 为键查 config/approvals.yaml，而那条记录只能凭
-    交互式终端铸出的一次性凭证写入。改一个断言 → 指纹变 → 必须重审。
+    判据是**内容**：以断言面 sha256 为键查审批账本，而那条记录只能凭交互式
+    终端铸出的一次性凭证（或 `mint --grandfather` 的一次性批量通道）写入。
+    改一条断言 → 指纹变 → 必须重审。
 
-    没有 git 基线时跳过并说明：这条判据靠"相对基线有没有碰过"区分新写与既有，缺基线会
-    退化成"全部要审批"、误伤所有旧项目——宁可显式降级，不静默拦。
+    沿袭豁免 ("早于基线存在") 已删除——AI 先 commit 新场景再以那次提交当基线，
+    就能让未经任何人审的断言面过门禁。存量场景请 `atk approvals mint
+    --grandfather` 一次性转正。
+
+    没有 git 基线时跳过并说明：无基线的记录本就被 _unbound_record 拦着，
+    这里再降级一次，避免把非 git 项目每次门禁都判红。
     """
     if not ctx.rec.base_ref:
         return []
-    from .approvals import needs_approval
+    from .approvals import approvals_file, needs_approval, valid_approvals
 
-    touched = {str(f).lstrip("./") for f in (ctx.rec.affected_files or [])}
-    touched |= {str(p).lstrip("./") for p in ctx.dirty()}
     bad: list[str] = []
     for s in ctx.rec.scenarios:
         if not s.file:
             continue
-        needed, why = needs_approval(target=s.file, project=ctx.root, touched=touched,
-                                     repo=ctx.repo, base_ref=ctx.rec.base_ref)
+        needed, why = needs_approval(target=s.file, project=ctx.root)
         if needed:
             bad.append(f"{s.name}（{why}）")
     if not bad:
         return []
-    from .approvals import approvals_file, load_approvals, valid_approvals
     good, invalid = valid_approvals(approvals_file(ctx.root))
     tail = ""
     if invalid and not good:
@@ -436,8 +464,9 @@ def _unapproved_expects(ctx: GateContext) -> list[Note]:
     elif invalid:
         tail = f"；另有 {len(invalid)} 条签名无效的条目未被采信"
     return [Note(f"{len(bad)} 份场景的断言未经人工审批: " + "; ".join(bad) + tail
-                 + "（开发者在终端 atk approvals mint <文件> 铸凭证，再 "
-                   "atk review-draft <文件> --by <人> --verdict approve --approval <码>）",
+                 + "（新场景：开发者终端 atk approvals mint <文件> 铸凭证，再 "
+                   "atk review-draft <文件> --by <人> --verdict approve --approval <码>；"
+                   "存量场景一次性批：atk approvals mint --grandfather --by <人>）",
                  ok=False)]
 
 

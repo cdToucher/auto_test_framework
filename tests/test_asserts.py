@@ -1,6 +1,6 @@
 import httpx
 
-from atk.executors.asserts import MISSING, evaluate, get_path
+from atk.executors.asserts import MISSING, compare, evaluate, get_path
 
 RESPONSE = {
     "code": 0,
@@ -34,6 +34,20 @@ def test_status_eq_pass_fail():
     assert evaluate(_resp(RESPONSE), E(status=200))[0] is True
     ok, why = evaluate(httpx.Response(500), E(status=200))
     assert ok is False and "500" in why
+
+
+def test_is_null_accepts_empty_string():
+    """空串是"没有值"的第三种形态：既不满足 not_null，就必须满足 is_null。"""
+    assert compare("is_null", "", None)[0] is True
+    assert compare("not_null", "", None)[0] is False
+
+
+def test_bool_never_equals_number():
+    """True == 1 是 Python 的巧合；业务断言里布尔标志与数值 1 是两回事。"""
+    assert compare("eq", True, 1)[0] is False
+    assert compare("eq", 1, True)[0] is False
+    assert compare("eq", True, True)[0] is True
+    assert compare("eq", 1, 1)[0] is True
 
 
 def test_eq_pass_fail_with_diff_message():

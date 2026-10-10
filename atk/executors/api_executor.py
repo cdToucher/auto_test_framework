@@ -168,18 +168,31 @@ class ApiExecutor:
                               response=body_snippet(resp))
 
         warnings: list[str] = []
-        try:
-            body = resp.json()
-        except ValueError:
-            body = None
-            warnings.append("响应非 JSON，capture 已跳过")
-        if body is not None:
+        if step.capture:
+            # capture 是场景对响应形状的显式要求：没命中就是这一步没得到它需要的东西。
+            # 旧实现只写进警告让步骤照过，报错要等到下一步"变量未解析"——失败点与原因点
+            # 隔了一步，报告上看起来像下一步的错，定位全靠猜。
+            try:
+                body = resp.json()
+            except ValueError:
+                return StepResult(
+                    step.call, False,
+                    f"capture 失败：响应非 JSON，无法提取 {'、'.join(step.capture)}",
+                    error_class="assertion", response=body_snippet(resp),
+                )
+            missed = [
+                f"{var}（路径 {dotted}）"
+                for var, dotted in step.capture.items()
+                if get_path(body, dotted) is MISSING
+            ]
+            if missed:
+                return StepResult(
+                    step.call, False,
+                    "capture 未命中: " + "、".join(missed),
+                    error_class="assertion", response=body_snippet(resp),
+                )
             for var, dotted in step.capture.items():
-                val = get_path(body, dotted)
-                if val is MISSING:
-                    warnings.append(f"capture '{var}' 未命中路径 '{dotted}'")
-                else:
-                    self.variables[var] = val
+                self.variables[var] = get_path(body, dotted)
         detail = f"{resp.status_code}"
         if warnings:
             detail += "；警告: " + "; ".join(warnings)

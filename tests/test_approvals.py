@@ -114,6 +114,17 @@ def test_token_is_bound_to_one_piece_of_content(proj, draft, monkeypatch):
     assert not ok and "不符" in why
 
 
+def test_mint_requires_a_scenario_path(proj, draft, human_approval):
+    """mint 只认场景路径：--run 已删除。
+
+    run 级凭证（target=run:<id>、key=""）没有任何读取方——is_approved 按场景
+    断言面指纹匹配，gate 的整单确认读运行记录。那是一条走完 mint 全流程
+    （交互式终端 + 手抄一次性码）却只写出死条目的仪式。
+    """
+    r = cli.invoke(app, ["approvals", "mint", "--run", "smoke-20260101-000000"])
+    assert r.exit_code == 2, r.output
+
+
 def test_review_draft_without_token_does_not_create_a_record(proj, draft, monkeypatch):
     """没凭证也能记录评审动作，但**不产生审批记录**——这是"AI 自批"被堵住的地方。"""
     monkeypatch.setattr(approvals, "human_present", lambda: False)
@@ -176,32 +187,59 @@ def test_empty_reviewer_is_rejected(proj):
     assert approvals.check_reviewer("   ", proj)
 
 
-# ---------------------------------------------------------------- 沿袭 vs 新增
+# ---------------------------------------------------------------- 沿袭豁免已删除
 
-def test_untouched_existing_scenario_is_grandfathered(proj, monkeypatch):
-    old = proj / "scenarios" / "order" / "old.yaml"
-    old.write_text(DRAFT.replace("ai-generated", "smoke"), encoding="utf-8")
+def test_no_scenario_is_grandfathered_anymore(proj):
+    """沿袭豁免（"早于基线存在就不用批"）已删除：它留了一个洞。
+
+    旧规则下，AI 把新场景**先 commit**、再以那次提交当基线跑 plan，文件就
+    "早于基线存在"了——未经任何人审的断言面直接过门禁（tests/test_forgery_gates.py
+    曾把这条缺口钉成测试）。现在：没批过就是没批过，存量场景用
+    `atk approvals mint --grandfather` 一次性转正。
+    """
+    committed = proj / "scenarios" / "order" / "old.yaml"
+    committed.write_text(DRAFT.replace("ai-generated", "smoke"), encoding="utf-8")
     _git("add", "-A", cwd=proj)
     _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "add old",
          cwd=proj)
-    needed, why = approvals.needs_approval(target=old, project=proj, touched=set(),
-                                           repo=proj, base_ref="HEAD")
-    assert not needed and "沿袭" in why
-
-
-def test_file_created_after_the_base_always_needs_approval(proj):
-    """先 commit 再 plan 不能自助转正：基线处没这个文件就是新增。"""
-    new = proj / "scenarios" / "order" / "brand-new.yaml"
-    new.write_text(DRAFT.replace("ai-generated", "smoke"), encoding="utf-8")
-    needed, why = approvals.needs_approval(target=new, project=proj, touched=set(),
-                                           repo=proj, base_ref="HEAD")
-    assert needed and "基线之后才出现" in why
+    fresh = proj / "scenarios" / "order" / "brand-new.yaml"
+    fresh.write_text(DRAFT.replace("ai-generated", "smoke"), encoding="utf-8")
+    for f in (committed, fresh):
+        needed, why = approvals.needs_approval(target=f, project=proj, touched=set())
+        assert needed and "尚无人批准" in why, (f, needed, why)
 
 
 def test_touched_file_needs_approval(proj, draft):
     rel = approvals._rel(draft, proj)
     needed, why = approvals.needs_approval(target=draft, project=proj, touched={rel})
-    assert needed and "变更碰过" in why
+    assert needed and "尚无人批准" in why
+
+
+def test_grandfather_bulk_approves_every_unapproved_scenario(proj, monkeypatch):
+    """一次性批量转正：交互式终端里一次确认，为场景库所有未批准场景写签名审批。"""
+    f = proj / "scenarios" / "order" / "old.yaml"
+    f.write_text(DRAFT.replace("ai-generated", "smoke"), encoding="utf-8")
+    monkeypatch.setattr(approvals, "human_present", lambda: True)
+    monkeypatch.setattr("typer.confirm", lambda *a, **k: True)
+    rel = approvals._rel(f, proj)
+    key = approvals.expect_hash(f)
+
+    r = cli.invoke(app, ["approvals", "mint", "--grandfather", "--by", "lisi"])
+    assert r.exit_code == 0, r.output
+    good, invalid = approvals.valid_approvals(approvals.approvals_file(proj))
+    assert not invalid
+    assert any(a.target == rel and a.key == key and a.by == "lisi" for a in good)
+    # 批过之后不再需要审批
+    assert approvals.needs_approval(target=f, project=proj)[0] is False
+
+
+def test_grandfather_refuses_non_interactive_shell(proj, monkeypatch):
+    f = proj / "scenarios" / "order" / "old.yaml"
+    f.write_text(DRAFT.replace("ai-generated", "smoke"), encoding="utf-8")
+    monkeypatch.setattr(approvals, "human_present", lambda: False)
+    r = cli.invoke(app, ["approvals", "mint", "--grandfather", "--by", "lisi"])
+    assert r.exit_code == 2, r.output
+    assert not approvals.load_approvals(approvals.approvals_file(proj))
 
 
 def test_approved_content_clears_the_requirement(proj, draft, monkeypatch):
